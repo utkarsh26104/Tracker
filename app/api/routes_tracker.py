@@ -1,0 +1,89 @@
+import uuid
+
+from fastapi import APIRouter, HTTPException, Request
+
+from app.api.schemas import ApproveRequest, HistoryResponse, RetryRequest, RetryResponse, RunRequest, RunResponse
+from app.db.history import list_history
+from app.graph.master_graph import resume_and_finalize, retry_company, run_map_phase
+from app.graph.state import CompanyJobStatus
+
+router = APIRouter(prefix="/tracker", tags=["tracker"])
+
+
+@router.post("/run", response_model=RunResponse)
+async def run_tracker(request: RunRequest, http_request: Request) -> RunResponse:
+    """Map phase: runs each company's research graph. Each one pauses at the
+    HITL gate once a draft report is ready - nothing is published yet. Call
+    POST /tracker/approve with the returned job_id to continue."""
+    job_id = str(uuid.uuid4())
+    pool = http_request.app.state.db_pool
+
+    # The client itself needs its own report for strategy synthesis to have
+    # anything to compare competitors against - include it even if the
+    # caller only listed competitors.
+    companies = list(request.companies)
+    if request.client_company and request.client_company not in companies:
+        companies.append(request.client_company)
+
+    master_state = await run_map_phase(job_id=job_id, companies=companies, pool=pool, search_days=request.search_days)
+
+    return RunResponse(
+        job_id=master_state.job_id,
+        company_statuses=master_state.company_statuses,
+        company_reports=master_state.company_reports,
+        company_route_histories=master_state.company_route_histories,
+        comparison_matrix=master_state.comparison_matrix,
+    )
+
+
+@router.get("/history", response_model=HistoryResponse)
+async def get_history(http_request: Request, limit: int = 50) -> HistoryResponse:
+    """Every report that has actually been published (approved) so far,
+    newest first - individual company reports and comparison matrices alike."""
+    pool = http_request.app.state.db_pool
+    entries = await list_history(pool, limit=limit)
+    return HistoryResponse(entries=entries)
+
+
+@router.post("/retry", response_model=RetryResponse)
+async def retry_tracker(request: RetryRequest, http_request: Request) -> RetryResponse:
+    """A reviewer isn't happy with a company's draft report - redirect that
+    company's paused graph back into the research loop (Search/Analyze/Write)
+    instead of publishing the existing draft, then pause again once a new
+    one is ready. Only affects the named company; the rest of the job (and
+    any already-approved companies) are untouched."""
+    pool = http_request.app.state.db_pool
+
+    try:
+        result = await retry_company(pool, job_id=request.job_id, company=request.company)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+    report = result.get("final_report")
+    return RetryResponse(
+        company=request.company,
+        status=CompanyJobStatus.AWAITING_APPROVAL if report else CompanyJobStatus.FAILED,
+        report=report,
+        route_history=result.get("route_history", []),
+    )
+
+
+@router.post("/approve", response_model=RunResponse)
+async def approve_tracker(request: ApproveRequest, http_request: Request) -> RunResponse:
+    """Reduce phase: resumes each named company's graph past the HITL gate to
+    completion, then synthesizes their reports into the Comparison Matrix.
+    Companies from the original run that aren't listed here are simply left
+    paused (rejected)."""
+    pool = http_request.app.state.db_pool
+
+    master_state = await resume_and_finalize(
+        job_id=request.job_id, companies=request.companies, pool=pool, client_company=request.client_company
+    )
+
+    return RunResponse(
+        job_id=master_state.job_id,
+        company_statuses=master_state.company_statuses,
+        company_reports=master_state.company_reports,
+        company_route_histories=master_state.company_route_histories,
+        comparison_matrix=master_state.comparison_matrix,
+    )

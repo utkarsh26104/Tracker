@@ -1,0 +1,122 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+An autonomous multi-agent competitive-intelligence system. Given a list of competitor
+companies, a team of LLM agents (LangGraph) researches each one concurrently, drafts an
+executive report, pauses for human approval, then synthesizes everything into a Comparison
+Matrix. Built on a genuinely free/near-free stack (Groq, Neon Postgres, ChromaDB, Tavily) as a
+portfolio/demo project — see `README.md` for the full pitch, cost model, and deployment guide.
+
+## Commands
+
+```bash
+# Setup
+python -m venv .venv && .venv\Scripts\activate      # Windows
+pip install -e ".[dev]"
+cp .env.example .env                                 # fill in GROQ_API_KEY, TAVILY_API_KEY, DATABASE_URL
+python scripts/seed_historical_data.py                # populate ChromaDB with sample history
+
+# Run (two processes, separate terminals)
+python scripts/serve.py                               # API on :8000 - see Windows note below
+streamlit run ui/streamlit_app.py                      # UI on :8501
+
+# Tests
+pytest tests/ -v                       # full suite
+pytest tests/test_supervisor.py -v     # single file
+pytest tests/ -v --ignore=tests/test_memory.py -k test_name  # single test, skip the slow local-model file
+```
+
+No linter/formatter is configured in this repo.
+
+**Windows: always launch the API via `python scripts/serve.py`, never a bare `uvicorn
+app.main:app`.** psycopg's async mode (used by the Postgres checkpointer) requires
+`SelectorEventLoop`; uvicorn's built-in loop factories return `ProactorEventLoop`
+unconditionally on win32 and bypass `asyncio.set_event_loop_policy()` entirely (they pass
+`loop_factory=` straight to `asyncio.run()`). `scripts/serve.py` passes the custom factory in
+`app/winloop.py` that fixes this — read that file's docstring before touching event-loop code.
+
+Tests skip the Postgres-dependent ones automatically if `DATABASE_URL` isn't reachable (see the
+`pg_pool` fixture in `tests/conftest.py`), so the suite runs without secrets configured, just
+with less coverage. `tests/test_memory.py` loads real FinancialBERT models with no mocks — can
+be slow depending on machine/disk-cache state; unrelated to correctness if it's just slow.
+
+## Architecture
+
+**Map-Reduce over isolated per-company LangGraph state machines.** `POST /tracker/run` (Map)
+spawns one independent LangGraph run per company concurrently — no shared context between
+companies, each checkpointed to Postgres under its own `thread_id` (`{job_id}:{company}`).
+`POST /tracker/approve` (Reduce) resumes only the approved companies past a human-approval gate
+and synthesizes their reports into one Comparison Matrix. Companies omitted from `/approve`
+just stay paused forever (the reject path — see trade-offs in README).
+
+**The per-company graph** (`app/graph/build_graph.py`) is a cyclic 4-node LangGraph, entirely
+`async def` nodes:
+- **Supervisor** (`supervisor.py`) — Groq-backed router with a strict Pydantic output schema
+  (`RouteDecision`), decides `Search | Analyze | Write | FINISH`. Has a deterministic
+  loop-count guardrail that force-terminates without calling the LLM once `max_loops` is hit —
+  necessary because a routing model can fail to emit `FINISH` reliably.
+- **Scout** (`scout.py`) — Tavily web search, wrapped in `asyncio.to_thread` (sync-only client).
+- **Brain** (`brain.py`) — the RAG step, over *two* separate ChromaDB collections. It embeds new
+  Scout findings via FinancialBERT and **upserts them into `competitor_history`**
+  (`app/memory/vector_store.py`, so the vector store keeps growing across every run, not just
+  this session), then queries the same store for similar historical snippets scoped by company
+  name, and runs sentiment classification. Separately, it does an exact-match lookup (not a
+  similarity search) against `client_context` (`app/memory/client_context.py`) — a
+  consultancy-provided CSV of clients and their known competitors (`scripts/
+  load_client_context.py`), kept in its own collection so curated firm knowledge doesn't get
+  crowded out by web snippets. Both collections get written and read every time Brain runs.
+- **Writer** (`writer.py`) — drafts the report from Scout + Brain context (also strict
+  structured output, `WriterOutput`), can flag `sufficient_data=false` to force another loop
+  instead of fabricating content.
+- A **publish_report** node sits behind `interrupt_before=["publish_report"]` — this is the
+  HITL gate. The graph genuinely pauses here (verifiable via `graph.aget_state(config).next`)
+  until `/tracker/approve` resumes it.
+
+State shape is in `app/graph/state.py` (`AgentState` for the per-company graph channel,
+`MasterComparisonState` for the Map-Reduce-level job view). `route_history` on `AgentState` is
+the full audit trail of Supervisor decisions — surfaced in the UI as the "agent trace."
+
+**Checkpointing** (`app/db/checkpointer.py`) uses `AsyncPostgresSaver` over a shared
+`AsyncConnectionPool`, but **never share one checkpointer instance across concurrently-running
+graphs** — `AsyncPostgresSaver` holds an internal `asyncio.Lock` that serializes all cursor
+operations *per instance*, so a shared instance silently serializes "concurrent" Map-Reduce
+runs regardless of pool size (measured ~10.6s → 4.6s for 3 companies after fixing this). Always
+call `make_checkpointer(pool)` fresh per graph run — see that function's docstring.
+
+**Retry/resilience** (`app/graph/master_graph.py`): `_ainvoke_with_retry()` wraps the whole
+`graph.ainvoke()` call (not per-node) for transient connection errors — `psycopg.OperationalError`
+and `requests.exceptions.ConnectionError` are *not* covered by LangGraph's own node-level
+`RetryPolicy` (checkpoint writes happen in LangGraph's Pregel runtime after a node returns,
+outside any node's retry boundary; `requests.exceptions.ConnectionError` is an `OSError`
+subclass, which LangGraph's default retry predicate explicitly excludes). A retry here is safe
+and resumes from the last checkpoint rather than restarting, because the graph is checkpointed.
+The same wrapper also catches `groq.RateLimitError` (429s) and parses Groq's own suggested wait
+time out of the error message — `ChatGroq`'s built-in `max_retries` (`app/llm/groq_client.py`)
+isn't enough on its own under real concurrent Map-Reduce load, since two companies' internal
+retries can keep colliding on the same recovering per-minute token budget.
+
+**Structured LLM output**: always pass `method="json_schema", strict=True` to
+`.with_structured_output()` for Groq calls (see `supervisor.py`/`writer.py`). The default
+`method="function_calling"` is best-effort even on models that support strict mode, and was
+observed in real testing to occasionally emit unparseable JSON under load. `strict=True` uses
+Groq's actual constrained decoding, which makes malformed output structurally impossible.
+
+**Lazy-loaded singletons need real locks, not just `@lru_cache`**: `@lru_cache` doesn't stop two
+concurrent first-callers from both executing the wrapped function body before either has cached
+a result — this broke PyTorch model loading (`NotImplementedError: Cannot copy out of meta
+tensor`) when two companies' Brain nodes raced to initialize the same FinBERT model
+simultaneously via `asyncio.to_thread` (separate OS threads). The lazy singletons in
+`app/memory/embeddings.py`, `sentiment.py`, and `vector_store.py` all use manual
+double-checked locking (`threading.Lock`) instead.
+
+**Exceptions in Map/Reduce phases must be logged, not just caught.** `run_map_phase` and
+`resume_and_finalize` catch per-company exceptions via `asyncio.gather(..., return_exceptions=True)`
+and convert them to a `FAILED` status — always pair that with `logger.exception(...,
+exc_info=outcome)` (works correctly even outside an active `except` block when the exception
+object is passed explicitly), or failures become undiagnosable without manual reproduction.
+Similarly, don't let a failure in the *last* step of a multi-step function (e.g. Comparison
+Matrix synthesis in `resume_and_finalize`) throw away results that already succeeded earlier in
+the same function — wrap it and degrade gracefully instead of crashing the whole request.

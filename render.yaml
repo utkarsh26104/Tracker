@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: tracker-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -e .
+    startCommand: python scripts/serve.py
+    healthCheckPath: /health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_SUPERVISOR_MODEL
+        value: openai/gpt-oss-120b
+      - key: GROQ_WRITER_MODEL
+        value: openai/gpt-oss-120b
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CHROMA_PERSIST_DIR
+        value: ./data/chroma
+      - key: FINBERT_EMBED_MODEL
+        value: yiyanghkust/finbert-tone
+      - key: FINBERT_SENTIMENT_MODEL
+        value: ProsusAI/finbert
