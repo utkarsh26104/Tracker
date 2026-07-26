@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from dateutil import parser as date_parser
 
-from app.graph.state import AgentState, ScoutFinding, WriterOutput
+from app.graph.state import CLIENT_REPORT_CACHE_MAX_AGE_DAYS, AgentState, ScoutFinding, WriterOutput
 from app.llm.groq_client import get_writer_llm
 
 SYSTEM_PROMPT_TEMPLATE = """You are the Writer agent on a competitive-intelligence research team.
@@ -18,6 +18,12 @@ If "Client & Competitor Context" is present, it comes from our own firm's client
 the public web - treat it as authoritative background (e.g. why we're tracking this company, \
 who it's known to compete with) and weave it into the framing, but don't just restate it \
 verbatim as if it were a new finding.
+
+If "Uploaded Client Dossier" is present, it's a document our firm supplied directly (not the \
+public web either) - treat it as a trusted primary source. If it's marked current, you can lean \
+on it heavily even where scouted findings are thin. If it's marked stale, still use it for \
+background/history, but let the scouted findings (if any) take precedence for anything recent, \
+and note where the dossier may be out of date.
 
 If the public web findings are thin (common for smaller or local businesses with little press \
 coverage), don't force a report shaped like one for a large public company. Say plainly what \
@@ -94,6 +100,19 @@ def _build_context(state: AgentState) -> str:
                 client_detail = f" ({c.client_details})" if c.client_details else ""
                 text = f"{c.competitor_name}{detail} is a known competitor of our client {c.client_name}{client_detail}."
             lines.append(f"- {text}" + (f" Notes: {c.notes}" if c.notes else ""))
+
+    upload = state.get("client_upload_context")
+    if upload:
+        age_days = (datetime.now(timezone.utc) - upload.uploaded_at).days
+        freshness = (
+            f"current, uploaded {age_days} day(s) ago"
+            if age_days <= CLIENT_REPORT_CACHE_MAX_AGE_DAYS
+            else f"stale - uploaded {age_days} days ago, may be out of date"
+        )
+        lines.append(
+            f"\n## Uploaded Client Dossier ({upload.source_filename}, {freshness})\n"
+            f"{_truncate(upload.text, _MAX_SNIPPET_CHARS * 6)}"
+        )
 
     if state["sentiment_summary"]:
         lines.append(f"\n## Sentiment summary\n{state['sentiment_summary']}")

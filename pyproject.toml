@@ -27,6 +27,7 @@ dependencies = [
     "streamlit>=1.40",
     "xhtml2pdf>=0.2.16",
     "markdown>=3.7",
+    "pypdf>=5.1",  # extracts text from uploaded client-dossier PDFs
 ]
 
 [project.optional-dependencies]

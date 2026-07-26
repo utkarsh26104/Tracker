@@ -10,9 +10,16 @@ import requests
 from app.db.checkpointer import make_checkpointer
 from app.db.history import get_recent_company_report, save_report
 from app.graph.build_graph import build_graph
-from app.graph.state import CompanyJobStatus, MasterComparisonState, new_agent_state
+from app.graph.state import (
+    CLIENT_REPORT_CACHE_MAX_AGE_DAYS,
+    ClientUploadContext,
+    CompanyJobStatus,
+    MasterComparisonState,
+    new_agent_state,
+)
 from app.llm.groq_client import get_writer_llm
 from app.memory.client_context import query_client_context
+from app.memory.client_uploads import get_client_upload
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +28,8 @@ logger = logging.getLogger(__name__)
 # every single run burns Tavily/Groq quota for data that hasn't gone stale.
 # Competitors are never cached this way (only the named client_company),
 # since the whole point of a run is fresh intel on them specifically.
-CLIENT_REPORT_CACHE_MAX_AGE_DAYS = 30
+# (CLIENT_REPORT_CACHE_MAX_AGE_DAYS itself lives in state.py - see its
+# comment there for why.)
 
 COMPARISON_SYSTEM_PROMPT_TEMPLATE = """You are synthesizing several single-company competitive
 intelligence reports into one executive "Competitive Landscape Comparison Matrix."
@@ -50,6 +58,14 @@ Produce a concise Markdown "Strategic Recommendation" document with these sectio
    recommendation in some area, say so rather than filling the gap with platitudes.
 
 Keep it under ~700 words - this has a hard output token budget."""
+
+DOSSIER_ONLY_SYSTEM_PROMPT_TEMPLATE = """You are the Writer agent on a competitive-intelligence
+research team. Today's date is {today}. Draft a concise executive Markdown report on {company}
+using ONLY the uploaded client dossier below - no web search was performed for this run because
+the dossier ({freshness}) is recent enough to stand on its own.
+
+Keep the report under ~500 words. If the dossier doesn't cover something a reader would expect
+(e.g. recent pricing moves), say so plainly rather than guessing at it."""
 
 # Transient network/connection blips (Neon connection reset mid-checkpoint-write,
 # Tavily connection reset, etc.) observed in real runs. Neither is retried by
@@ -126,7 +142,9 @@ async def run_company(pool, company: str, job_id: str, search_days: int = 30) ->
     return company, result
 
 
-async def run_company_with_cached_report(pool, company: str, job_id: str, cached_report: str) -> tuple[str, dict]:
+async def run_company_with_cached_report(
+    pool, company: str, job_id: str, cached_report: str, route_history_label: str | None = None
+) -> tuple[str, dict]:
     """Skip Scout/Brain/Writer entirely and seed the graph with an already-
     known-good report. max_loops=0 makes the Supervisor's deterministic
     guardrail (not the LLM) force FINISH on its very first call, since
@@ -143,10 +161,34 @@ async def run_company_with_cached_report(pool, company: str, job_id: str, cached
     initial_state = new_agent_state(company=company, job_id=thread_id, max_loops=0)
     initial_state["final_report"] = cached_report
     initial_state["route_history"] = [
-        f"Reused cached report (< {CLIENT_REPORT_CACHE_MAX_AGE_DAYS} days old) - no fresh search performed"
+        route_history_label
+        or f"Reused cached report (< {CLIENT_REPORT_CACHE_MAX_AGE_DAYS} days old) - no fresh search performed"
     ]
     result = await _ainvoke_with_retry(graph, initial_state, config)
     return company, result
+
+
+async def _draft_report_from_upload(company: str, upload: ClientUploadContext) -> str:
+    """A single Writer call over just the uploaded dossier - no Scout/Brain
+    involved. Used when the upload is fresh enough that a live web search
+    isn't needed (see run_map_phase); a stale upload instead flows through
+    the normal full pipeline, where Brain includes it as background
+    alongside real Scout findings."""
+    llm = get_writer_llm()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    age_days = (datetime.now(timezone.utc) - upload.uploaded_at).days
+    response = await llm.ainvoke(
+        [
+            (
+                "system",
+                DOSSIER_ONLY_SYSTEM_PROMPT_TEMPLATE.format(
+                    today=today, company=company, freshness=f"uploaded {age_days} day(s) ago"
+                ),
+            ),
+            ("human", f"# Uploaded Client Dossier ({upload.source_filename})\n\n{upload.text}"),
+        ]
+    )
+    return response.content
 
 
 async def retry_company(pool, job_id: str, company: str) -> dict:
@@ -199,7 +241,13 @@ async def run_map_phase(
     If client_company names one of the companies and we already have a
     report_history entry for it younger than CLIENT_REPORT_CACHE_MAX_AGE_DAYS,
     that company reuses the cached report instead of researching it again -
-    see run_company_with_cached_report."""
+    see run_company_with_cached_report. Failing that, if the consultancy has
+    uploaded a client dossier (app/memory/client_uploads.py) younger than
+    the same threshold, a report is drafted from just that dossier instead
+    of a live search. A stale or absent dossier falls through to the normal
+    full pipeline, where Brain includes it as background regardless of age -
+    so a stale upload still gets mixed with fresh Scout findings rather than
+    being ignored outright."""
     master_state = MasterComparisonState(
         job_id=job_id,
         companies=companies,
@@ -212,6 +260,22 @@ async def run_map_phase(
             cached_report = await get_recent_company_report(pool, company, CLIENT_REPORT_CACHE_MAX_AGE_DAYS)
             if cached_report is not None:
                 return await run_company_with_cached_report(pool, company, job_id, cached_report)
+
+            upload = await asyncio.to_thread(get_client_upload, company)
+            if upload is not None:
+                age_days = (datetime.now(timezone.utc) - upload.uploaded_at).days
+                if age_days <= CLIENT_REPORT_CACHE_MAX_AGE_DAYS:
+                    drafted_report = await _draft_report_from_upload(company, upload)
+                    return await run_company_with_cached_report(
+                        pool,
+                        company,
+                        job_id,
+                        drafted_report,
+                        route_history_label=(
+                            "Reused cached report (drafted from an uploaded dossier, "
+                            f"< {CLIENT_REPORT_CACHE_MAX_AGE_DAYS} days old) - no fresh search performed"
+                        ),
+                    )
         return await run_company(pool, company, job_id, search_days)
 
     results = await asyncio.gather(

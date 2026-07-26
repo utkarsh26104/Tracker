@@ -145,4 +145,26 @@ force `FINISH` on the very first `supervisor_node` invocation — the graph stil
 checkpointed thread and pauses at the normal `interrupt_before=["publish_report"]` gate, so
 `/tracker/approve`'s `resume_one` needs no special-casing at all. Competitors are never cached
 this way, only the named `client_company` — the whole point of a run is fresh intel on
-competitors specifically.
+competitors specifically. `CLIENT_REPORT_CACHE_MAX_AGE_DAYS` lives in `app/graph/state.py`, not
+`master_graph.py`, because `writer.py` needs it too (see below) and importing it from
+`master_graph.py` would create a circular import (`master_graph` → `build_graph` → `writer` →
+`master_graph`).
+
+**Client dossier uploads** (`app/memory/client_uploads.py`, `app/services/document_parsing.py`,
+`POST /tracker/upload-client-file`): a third ChromaDB collection, separate from
+`client_context.py`'s curated CSV roster and `vector_store.py`'s scouted-web-history, for a
+consultancy-supplied document (PDF/.txt/.md) about a specific client — text is extracted, chunked
+(~1500 chars, paragraph-aware), embedded, and stored keyed by company; re-uploading for the same
+company replaces its prior chunks (`collection.delete(where={"company": company})` before
+inserting) rather than accumulating stale ones. Brain (`brain.py`) always queries it for whichever
+company it's researching (same unconditional-inclusion pattern as `client_context`) and Writer
+(`writer.py`) labels it "current" or "stale" in the prompt based on
+`CLIENT_REPORT_CACHE_MAX_AGE_DAYS`, so the LLM can judge how much to lean on it versus fresh Scout
+findings itself. On top of that, `run_map_phase` gives a **fresh** upload (no existing
+system-report cache hit) the same skip-the-web-search treatment as the report cache above: one
+direct Writer call over just the dossier (`_draft_report_from_upload`, using `get_writer_llm()`
+plainly, not `.with_structured_output`, since there's no `sufficient_data` self-check to make when
+Scout never ran) produces a report, which then goes through `run_company_with_cached_report` the
+same way a cached system report would. A **stale** upload does *not* get this shortcut — it falls
+through to the normal full pipeline, where Brain still includes it (marked stale) alongside real
+Scout findings, so the final report blends both rather than ignoring the old dossier outright.

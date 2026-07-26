@@ -7,6 +7,13 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 
 
+# Shared by master_graph.py (system-report reuse + fresh-upload short-circuit)
+# and writer.py (staleness labeling of an uploaded dossier) - lives here,
+# not in master_graph.py, to avoid a circular import (master_graph ->
+# build_graph -> writer -> master_graph).
+CLIENT_REPORT_CACHE_MAX_AGE_DAYS = 30
+
+
 class RouteDecision(BaseModel):
     """Supervisor's strict structured output."""
 
@@ -42,6 +49,15 @@ class ClientContextMatch(BaseModel):
     notes: str | None = None
 
 
+class ClientUploadContext(BaseModel):
+    """The consultancy's own uploaded dossier on a company (PDF/text/Markdown
+    - see app/memory/client_uploads.py), reassembled from its stored chunks."""
+
+    text: str
+    source_filename: str
+    uploaded_at: datetime
+
+
 class WriterOutput(BaseModel):
     """Structured writer output - lets the LLM self-report sufficiency."""
 
@@ -60,6 +76,7 @@ class AgentState(TypedDict):
     scouted_data: list[ScoutFinding]
     historical_context: list[HistoricalMatch]
     client_context: list[ClientContextMatch]
+    client_upload_context: ClientUploadContext | None
     sentiment_summary: str | None
     final_report: str | None
     route_history: list[str]
@@ -100,6 +117,7 @@ def new_agent_state(company: str, job_id: str, max_loops: int = 6, search_days: 
         scouted_data=[],
         historical_context=[],
         client_context=[],
+        client_upload_context=None,
         sentiment_summary=None,
         final_report=None,
         route_history=[],

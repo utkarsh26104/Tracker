@@ -93,6 +93,13 @@ client over time, and freshly re-searching the client itself on every single run
 Tavily/Groq quota on data that hasn't gone stale. The review step flags reused reports (📦) and
 the "try again" button forces a real search if the cached data isn't good enough.
 
+You can also upload your own profile on a client directly (📎 "Upload a client dossier" on the
+input page, or `POST /tracker/upload-client-file`) - a PDF/.txt/.md gets extracted, chunked, and
+embedded into its own ChromaDB collection. If it's recent (< 30 days old), a report is drafted
+from it alone with no web search at all. If it's older, it still gets pulled in as background and
+blended with fresh Scout findings rather than being ignored - so an outdated-but-useful dossier
+never goes to waste.
+
 **Windows note:** always launch via `scripts/serve.py`, not a bare `uvicorn app.main:app`.
 psycopg's async mode needs a `SelectorEventLoop`; uvicorn's default loop factory
 unconditionally returns `ProactorEventLoop` on Windows regardless of any

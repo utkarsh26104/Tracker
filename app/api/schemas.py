@@ -45,3 +45,9 @@ class HistoryEntry(BaseModel):
 
 class HistoryResponse(BaseModel):
     entries: list[HistoryEntry]
+
+
+class UploadClientFileResponse(BaseModel):
+    company: str
+    source_filename: str
+    chunk_count: int

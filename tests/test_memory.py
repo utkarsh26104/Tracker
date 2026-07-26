@@ -1,6 +1,7 @@
 """Real local FinancialBERT/ChromaDB tests - no mocks, no network, no
 credentials needed. Slower than the mocked graph tests (loads real models)."""
 
+from app.memory.client_uploads import get_client_upload, upsert_client_upload
 from app.memory.embeddings import embed_texts
 from app.memory.sentiment import summarize_sentiment
 from app.memory.vector_store import query_similar, upsert_snippets
@@ -48,3 +49,39 @@ def test_sentiment_summary_produces_a_breakdown():
     )
     assert summary is not None
     assert "Sentiment breakdown" in summary
+
+
+def test_client_upload_round_trip():
+    company = "TestCo Dossier Suite"
+    upsert_client_upload(company, "dossier.txt", "TestCo is a DTC supplements brand founded in 2020.")
+
+    upload = get_client_upload(company)
+
+    assert upload is not None
+    assert "DTC supplements" in upload.text
+    assert upload.source_filename == "dossier.txt"
+
+
+def test_client_upload_reupload_replaces_prior_chunks():
+    company = "TestCo Dossier Reupload Suite"
+    upsert_client_upload(company, "v1.txt", "Old profile: TestCo sells widgets.")
+    upsert_client_upload(company, "v2.txt", "New profile: TestCo sells gadgets now.")
+
+    upload = get_client_upload(company)
+
+    assert "gadgets" in upload.text
+    assert "widgets" not in upload.text
+    assert upload.source_filename == "v2.txt"
+
+
+def test_client_upload_chunks_long_text_and_reassembles_it():
+    company = "TestCo Dossier Long Suite"
+    paragraphs = [f"Paragraph {i} about TestCo's business operations and market position." * 5 for i in range(10)]
+    long_text = "\n\n".join(paragraphs)
+
+    chunk_count = upsert_client_upload(company, "long.txt", long_text)
+    upload = get_client_upload(company)
+
+    assert chunk_count > 1
+    assert upload is not None
+    assert "Paragraph 0" in upload.text

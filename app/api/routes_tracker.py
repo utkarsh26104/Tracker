@@ -1,12 +1,23 @@
+import asyncio
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 from app.api.auth import require_api_key
-from app.api.schemas import ApproveRequest, HistoryResponse, RetryRequest, RetryResponse, RunRequest, RunResponse
+from app.api.schemas import (
+    ApproveRequest,
+    HistoryResponse,
+    RetryRequest,
+    RetryResponse,
+    RunRequest,
+    RunResponse,
+    UploadClientFileResponse,
+)
 from app.db.history import list_history
 from app.graph.master_graph import resume_and_finalize, retry_company, run_map_phase
 from app.graph.state import CompanyJobStatus
+from app.memory.client_uploads import upsert_client_upload
+from app.services.document_parsing import extract_text
 
 router = APIRouter(prefix="/tracker", tags=["tracker"], dependencies=[Depends(require_api_key)])
 
@@ -41,6 +52,23 @@ async def run_tracker(request: RunRequest, http_request: Request) -> RunResponse
         company_route_histories=master_state.company_route_histories,
         comparison_matrix=master_state.comparison_matrix,
     )
+
+
+@router.post("/upload-client-file", response_model=UploadClientFileResponse)
+async def upload_client_file(company: str = Form(...), file: UploadFile = File(...)) -> UploadClientFileResponse:
+    """Ingest a consultancy-supplied dossier (PDF/.txt/.md) on a client into
+    the client_uploads RAG collection. Replaces any prior upload for the
+    same company. A future /tracker/run naming this company as client_company
+    reuses it (see run_map_phase) instead of always doing a fresh web
+    search, as long as it's still recent enough."""
+    content = await file.read()
+    try:
+        text = await asyncio.to_thread(extract_text, file.filename, content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    chunk_count = await asyncio.to_thread(upsert_client_upload, company, file.filename, text)
+    return UploadClientFileResponse(company=company, source_filename=file.filename, chunk_count=chunk_count)
 
 
 @router.get("/history", response_model=HistoryResponse)

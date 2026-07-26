@@ -162,6 +162,36 @@ if st.session_state.phase == "input":
         "instead of a neutral comparison. This company is researched too even if you don't also "
         "list it below.",
     )
+
+    if client_company.strip():
+        with st.expander("📎 Upload a client dossier (optional)", expanded=False):
+            st.caption(
+                "Already have a profile on this client? Upload it (PDF/.txt/.md) and future runs "
+                "will reuse it instead of doing a fresh web search, as long as it's still recent "
+                "enough (< 30 days). A stale upload still gets blended with fresh search results "
+                "rather than ignored."
+            )
+            dossier_file = st.file_uploader(
+                "Client dossier", type=["pdf", "txt", "md"], key="dossier_uploader", label_visibility="collapsed"
+            )
+            if st.button("Upload Dossier", disabled=dossier_file is None):
+                try:
+                    resp = httpx.post(
+                        f"{API_BASE_URL}/tracker/upload-client-file",
+                        data={"company": client_company.strip()},
+                        files={"file": (dossier_file.name, dossier_file.getvalue())},
+                        headers=API_HEADERS,
+                        timeout=60.0,
+                    )
+                    resp.raise_for_status()
+                    result = resp.json()
+                    st.success(
+                        f"Uploaded {result['source_filename']} for {result['company']} "
+                        f"({result['chunk_count']} chunk(s))."
+                    )
+                except httpx.HTTPError as e:
+                    st.error(f"Upload failed: {e}")
+
     st.write("Enter one competitor per line, then run the research agents.")
     raw = st.text_area("Competitors", value="Stripe\nAdyen", height=120)
     recency_label = st.selectbox(

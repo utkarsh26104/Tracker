@@ -2,6 +2,7 @@ import asyncio
 
 from app.graph.state import AgentState
 from app.memory.client_context import query_client_context
+from app.memory.client_uploads import get_client_upload
 from app.memory.sentiment import summarize_sentiment
 from app.memory.vector_store import query_similar, upsert_snippets
 
@@ -30,6 +31,13 @@ async def brain_node(state: AgentState) -> dict:
     # regardless of how large the roster grows.
     client_context = await asyncio.to_thread(query_client_context, company=company)
 
+    # The consultancy's own uploaded dossier on this company, if any (see
+    # app/memory/client_uploads.py) - always included when present, same as
+    # client_context above. Its age (checked by the Writer, not here) is
+    # what determines whether it's treated as sufficient on its own or as
+    # background to supplement with fresh Scout findings.
+    client_upload_context = await asyncio.to_thread(get_client_upload, company)
+
     if findings:
         sentiment_summary = await asyncio.to_thread(summarize_sentiment, [f.snippet for f in findings])
     else:
@@ -38,5 +46,6 @@ async def brain_node(state: AgentState) -> dict:
     return {
         "historical_context": historical_context,
         "client_context": client_context,
+        "client_upload_context": client_upload_context,
         "sentiment_summary": sentiment_summary,
     }
