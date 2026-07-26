@@ -10,7 +10,18 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.services.report import markdown_to_pdf  # noqa: E402
 
+try:
+    # Streamlit Community Cloud's Secrets panel populates st.secrets, not
+    # os.environ, directly - bridge it so TRACKER_API_URL/TRACKER_API_KEY
+    # work the same way there as they do locally via .env.
+    for _key, _value in st.secrets.items():
+        os.environ.setdefault(_key, str(_value))
+except Exception:
+    pass  # no secrets.toml (e.g. local dev) - .env/shell env vars cover that case
+
 API_BASE_URL = os.environ.get("TRACKER_API_URL", "http://localhost:8000")
+API_KEY = os.environ.get("TRACKER_API_KEY", "")
+API_HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
 
 st.set_page_config(page_title="Tracker - Competitive Intelligence", layout="wide")
 
@@ -93,7 +104,7 @@ def call_api_with_progress(method: str, url: str, json: dict, running_label: str
 
     def _do_request():
         try:
-            resp = httpx.request(method, url, json=json, timeout=300.0)
+            resp = httpx.request(method, url, json=json, headers=API_HEADERS, timeout=300.0)
             resp.raise_for_status()
             result["data"] = resp.json()
         except httpx.HTTPError as e:
@@ -190,7 +201,7 @@ if st.session_state.phase == "input":
     with col2:
         if st.button("View Report History"):
             try:
-                resp = httpx.get(f"{API_BASE_URL}/tracker/history", timeout=30.0)
+                resp = httpx.get(f"{API_BASE_URL}/tracker/history", headers=API_HEADERS, timeout=30.0)
                 resp.raise_for_status()
                 st.session_state.history_data = resp.json()["entries"]
                 st.session_state.history_from_phase = "input"

@@ -119,14 +119,22 @@ if `DATABASE_URL` isn't reachable, so the suite still runs without secrets confi
 1. Push this repo to GitHub, then in Render: New → Blueprint → point at the repo (uses
    `render.yaml`).
 2. Set the `sync: false` env vars in the Render dashboard: `GROQ_API_KEY`, `TAVILY_API_KEY`,
-   `DATABASE_URL` (your Neon connection string).
+   `DATABASE_URL` (your Neon connection string). `API_KEY` doesn't need to be set manually -
+   `render.yaml` has it as `generateValue: true`, so Render generates a random one on first
+   deploy. Copy it from the Render dashboard's Environment tab afterward (you'll need it for the
+   Streamlit UI step below).
 3. Deploy. First request after idle will cold-start (~30-60s on the free tier).
 
 **UI → Streamlit Community Cloud:**
 1. share.streamlit.io → New app → point at this repo, main file `ui/streamlit_app.py`.
-2. Add a secret (Settings → Secrets): `TRACKER_API_URL = "https://your-render-app.onrender.com"`.
-   `ui/streamlit_app.py` reads this from `os.environ` - Streamlit Cloud injects secrets as env
-   vars automatically.
+2. Add secrets (Settings → Secrets):
+   ```
+   TRACKER_API_URL = "https://your-render-app.onrender.com"
+   TRACKER_API_KEY = "the API_KEY value from the Render dashboard"
+   ```
+   `ui/streamlit_app.py` bridges `st.secrets` into `os.environ` at startup, so these behave the
+   same as local `.env` vars. Once `API_KEY` is set on the Render side, every `/tracker/*`
+   request needs a matching `X-API-Key` header - this is what supplies it.
 
 **⚠️ RAM risk on Render's free tier (512MB, 0.1 CPU):** PyTorch + a loaded FinancialBERT model
 can use 400-600MB alone. The API will *start* fine on free tier (the model loads lazily, only

@@ -19,6 +19,8 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: API_KEY
+        generateValue: true
       - key: CHROMA_PERSIST_DIR
         value: ./data/chroma
       - key: FINBERT_EMBED_MODEL

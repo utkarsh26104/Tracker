@@ -120,3 +120,12 @@ object is passed explicitly), or failures become undiagnosable without manual re
 Similarly, don't let a failure in the *last* step of a multi-step function (e.g. Comparison
 Matrix synthesis in `resume_and_finalize`) throw away results that already succeeded earlier in
 the same function — wrap it and degrade gracefully instead of crashing the whole request.
+
+**API auth** (`app/api/auth.py`): `require_api_key` is a router-level dependency on the whole
+`/tracker` router, checked via `secrets.compare_digest` against `settings.api_key` (`API_KEY` env
+var). It's a deliberate no-op when `API_KEY` is unset, so local dev needs no setup — but that
+means a production deploy that forgets to set it is silently wide open, which is why
+`app/main.py`'s `lifespan` logs a warning at startup when `APP_ENV != "dev"` and no key is
+configured. `/health` is intentionally outside the router (unauthenticated), since Render's
+health checks and uptime monitors hit it without credentials. The Streamlit UI sends the key via
+an `X-API-Key` header (`TRACKER_API_KEY` env var / Streamlit secret) on every request.

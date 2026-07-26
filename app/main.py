@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,6 +9,8 @@ from app.config import settings
 from app.db.checkpointer import pool_context
 from app.db.history import init_history_table
 from app.memory.seed_data import seed_if_empty
+
+logger = logging.getLogger(__name__)
 
 # Windows note: run this app via `python scripts/serve.py` or
 # `uvicorn app.main:app --loop app.winloop:selector_loop_factory` - plain
@@ -19,6 +22,12 @@ from app.memory.seed_data import seed_if_empty
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.app_env != "dev" and not settings.api_key:
+        logger.warning(
+            "APP_ENV=%s but API_KEY is unset - /tracker/* endpoints are unauthenticated "
+            "and reachable by anyone with the URL.",
+            settings.app_env,
+        )
     async with pool_context() as pool:
         app.state.db_pool = pool
         await init_history_table(pool)

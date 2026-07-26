@@ -1,13 +1,14 @@
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.api.auth import require_api_key
 from app.api.schemas import ApproveRequest, HistoryResponse, RetryRequest, RetryResponse, RunRequest, RunResponse
 from app.db.history import list_history
 from app.graph.master_graph import resume_and_finalize, retry_company, run_map_phase
 from app.graph.state import CompanyJobStatus
 
-router = APIRouter(prefix="/tracker", tags=["tracker"])
+router = APIRouter(prefix="/tracker", tags=["tracker"], dependencies=[Depends(require_api_key)])
 
 
 @router.post("/run", response_model=RunResponse)

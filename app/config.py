@@ -10,6 +10,8 @@ class Settings(BaseSettings):
 
     tavily_api_key: str = ""
 
+    api_key: str = ""
+
     database_url: str = "postgresql://tracker:tracker@localhost:5432/tracker"
 
     chroma_persist_dir: str = "./data/chroma"
