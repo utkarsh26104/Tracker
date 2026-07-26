@@ -39,6 +39,8 @@ if "history_from_phase" not in st.session_state:
     st.session_state.history_from_phase = "input"
 if "client_company" not in st.session_state:
     st.session_state.client_company = ""
+if "report_chat_history" not in st.session_state:
+    st.session_state.report_chat_history = []
 
 with st.sidebar:
     st.title("Tracker")
@@ -65,6 +67,7 @@ checkpointed to Postgres so nothing is lost mid-run.
         st.session_state.map_result = None
         st.session_state.final_result = None
         st.session_state.client_company = ""
+        st.session_state.report_chat_history = []
         st.rerun()
 
 st.title("Competitive Landscape Tracker")
@@ -315,6 +318,7 @@ elif st.session_state.phase == "review":
             st.error(f"Request failed: {error}")
         else:
             st.session_state.final_result = data
+            st.session_state.report_chat_history = []
             st.session_state.phase = "final"
             st.rerun()
 
@@ -350,6 +354,59 @@ elif st.session_state.phase == "final":
             )
     else:
         st.warning("No comparison matrix was produced.")
+
+    if result.get("comparison_matrix") or result.get("company_reports"):
+        st.divider()
+        st.subheader("💬 Ask about this report")
+        st.caption(
+            "Ask questions about the report and strategy above - answers are grounded only in "
+            "this content, not a fresh web search."
+        )
+
+        for turn in st.session_state.report_chat_history:
+            with st.chat_message(turn["role"]):
+                st.markdown(turn["content"])
+
+        question = st.chat_input("e.g. Why is pricing flagged as a risk?")
+        if question:
+            st.session_state.report_chat_history.append({"role": "user", "content": question})
+            with st.chat_message("user"):
+                st.markdown(question)
+
+            # Full context: the top-level comparison/strategy plus every
+            # individual company report, so questions about either the
+            # overall strategy or one company's specifics can be answered.
+            context_parts = []
+            if result.get("comparison_matrix"):
+                heading = (
+                    f"Strategic Recommendation for {st.session_state.client_company}"
+                    if is_strategy
+                    else "Comparison Matrix"
+                )
+                context_parts.append(f"# {heading}\n{result['comparison_matrix']}")
+            for company, report in result.get("company_reports", {}).items():
+                context_parts.append(f"# {company} Report\n{report}")
+            report_context = "\n\n".join(context_parts)
+
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    try:
+                        resp = httpx.post(
+                            f"{API_BASE_URL}/tracker/ask",
+                            json={
+                                "report_context": report_context,
+                                "question": question,
+                                "history": st.session_state.report_chat_history[:-1],
+                            },
+                            headers=API_HEADERS,
+                            timeout=60.0,
+                        )
+                        resp.raise_for_status()
+                        answer = resp.json()["answer"]
+                    except httpx.HTTPError as e:
+                        answer = f"Sorry, something went wrong: {e}"
+                    st.markdown(answer)
+            st.session_state.report_chat_history.append({"role": "assistant", "content": answer})
 
     st.divider()
     st.caption("Individual reports")

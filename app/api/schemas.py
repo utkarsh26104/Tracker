@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 from app.graph.state import CompanyJobStatus
@@ -51,3 +53,18 @@ class UploadClientFileResponse(BaseModel):
     company: str
     source_filename: str
     chunk_count: int
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class AskReportRequest(BaseModel):
+    report_context: str  # the report/strategy markdown the question should be grounded in
+    question: str
+    history: list[ChatTurn] = []
+
+
+class AskReportResponse(BaseModel):
+    answer: str

@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from app.api.auth import require_api_key
 from app.api.schemas import (
     ApproveRequest,
+    AskReportRequest,
+    AskReportResponse,
     HistoryResponse,
     RetryRequest,
     RetryResponse,
@@ -18,6 +20,7 @@ from app.graph.master_graph import resume_and_finalize, retry_company, run_map_p
 from app.graph.state import CompanyJobStatus
 from app.memory.client_uploads import upsert_client_upload
 from app.services.document_parsing import extract_text
+from app.services.report_chat import answer_report_question
 
 router = APIRouter(prefix="/tracker", tags=["tracker"], dependencies=[Depends(require_api_key)])
 
@@ -69,6 +72,20 @@ async def upload_client_file(company: str = Form(...), file: UploadFile = File(.
 
     chunk_count = await asyncio.to_thread(upsert_client_upload, company, file.filename, text)
     return UploadClientFileResponse(company=company, source_filename=file.filename, chunk_count=chunk_count)
+
+
+@router.post("/ask", response_model=AskReportResponse)
+async def ask_about_report(request: AskReportRequest) -> AskReportResponse:
+    """Q&A over a report/strategy the caller already has (report_context is
+    sent by the client, not looked up server-side) - lets the reviewer ask
+    follow-up questions grounded in that exact content, with a bounded
+    conversation history for natural follow-ups."""
+    answer = await answer_report_question(
+        report_context=request.report_context,
+        question=request.question,
+        history=[turn.model_dump() for turn in request.history],
+    )
+    return AskReportResponse(answer=answer)
 
 
 @router.get("/history", response_model=HistoryResponse)

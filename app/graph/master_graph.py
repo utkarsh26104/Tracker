@@ -46,8 +46,11 @@ competitors, and (if present) notes from our firm's own records about this clien
 treat those notes as authoritative background, not just another finding.
 
 Produce a concise Markdown "Strategic Recommendation" document with these sections:
-1. **Competitive Comparison** - a table: {client_company} vs. each competitor (pricing, recent
-   moves, sentiment).
+1. **Competitive Comparison** - a table comparing {client_company} against each competitor
+   (pricing, recent moves, sentiment). {client_company} is the client this whole report is
+   written for, not one of its own competitors - label the row-identifying column "Company", not
+   "Competitor", and mark {client_company}'s own row clearly (e.g. "{client_company} (our
+   client)") so it's never confused for one of the competitor rows.
 2. **Sentiment & Market Position** - how {client_company} compares in public/market sentiment
    and positioning against the field.
 3. **Financial & Business Analysis** - pricing strategy, product moves, and business positioning
