@@ -3,7 +3,7 @@ LangGraph's own checkpoints, which persist per-thread execution state and
 aren't meant to be queried as a report archive. Only reports that actually
 get published (approved) land here."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 _CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS report_history (
@@ -39,6 +39,14 @@ ORDER BY created_at DESC
 LIMIT %s
 """
 
+_RECENT_COMPANY_REPORT_SQL = """
+SELECT content
+FROM report_history
+WHERE company = %s AND report_type = 'company' AND created_at > %s
+ORDER BY created_at DESC
+LIMIT 1
+"""
+
 
 async def init_history_table(pool) -> None:
     async with pool.connection() as conn:
@@ -59,3 +67,14 @@ async def list_history(pool, limit: int = 50) -> list[dict]:
     # The pool's connections default to row_factory=dict_row (see
     # app/db/checkpointer.py), so rows already come back as dicts.
     return [{**row, "created_at": row["created_at"].isoformat()} for row in rows]
+
+
+async def get_recent_company_report(pool, company: str, max_age_days: int) -> str | None:
+    """Most recent published report for this exact company, if one exists
+    within max_age_days - lets callers skip re-researching a company whose
+    data is still fresh enough rather than always hitting the web."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(_RECENT_COMPANY_REPORT_SQL, (company, cutoff))
+        row = await cur.fetchone()
+    return row["content"] if row else None

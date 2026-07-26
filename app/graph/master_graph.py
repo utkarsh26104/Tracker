@@ -8,13 +8,20 @@ import psycopg
 import requests
 
 from app.db.checkpointer import make_checkpointer
-from app.db.history import save_report
+from app.db.history import get_recent_company_report, save_report
 from app.graph.build_graph import build_graph
 from app.graph.state import CompanyJobStatus, MasterComparisonState, new_agent_state
 from app.llm.groq_client import get_writer_llm
 from app.memory.client_context import query_client_context
 
 logger = logging.getLogger(__name__)
+
+# A consultancy typically re-runs this tool many times for the same client
+# against different competitor sets - re-researching the client itself on
+# every single run burns Tavily/Groq quota for data that hasn't gone stale.
+# Competitors are never cached this way (only the named client_company),
+# since the whole point of a run is fresh intel on them specifically.
+CLIENT_REPORT_CACHE_MAX_AGE_DAYS = 30
 
 COMPARISON_SYSTEM_PROMPT_TEMPLATE = """You are synthesizing several single-company competitive
 intelligence reports into one executive "Competitive Landscape Comparison Matrix."
@@ -119,6 +126,29 @@ async def run_company(pool, company: str, job_id: str, search_days: int = 30) ->
     return company, result
 
 
+async def run_company_with_cached_report(pool, company: str, job_id: str, cached_report: str) -> tuple[str, dict]:
+    """Skip Scout/Brain/Writer entirely and seed the graph with an already-
+    known-good report. max_loops=0 makes the Supervisor's deterministic
+    guardrail (not the LLM) force FINISH on its very first call, since
+    final_report is already set - so this still creates a real checkpointed
+    thread that pauses at the normal HITL gate like any other company. That
+    means the reviewer sees it in the review step same as a fresh result,
+    and the existing "try again" button (retry_company) still works if they
+    want a real search instead of the cached one."""
+    checkpointer = make_checkpointer(pool)
+    graph = build_graph(checkpointer=checkpointer)
+
+    thread_id = _thread_id(job_id, company)
+    config = {"configurable": {"thread_id": thread_id}}
+    initial_state = new_agent_state(company=company, job_id=thread_id, max_loops=0)
+    initial_state["final_report"] = cached_report
+    initial_state["route_history"] = [
+        f"Reused cached report (< {CLIENT_REPORT_CACHE_MAX_AGE_DAYS} days old) - no fresh search performed"
+    ]
+    result = await _ainvoke_with_retry(graph, initial_state, config)
+    return company, result
+
+
 async def retry_company(pool, job_id: str, company: str) -> dict:
     """A reviewer isn't happy with a drafted report and wants fresh research
     before approving. The company's graph is paused right before
@@ -158,11 +188,18 @@ async def retry_company(pool, job_id: str, company: str) -> dict:
     return await _ainvoke_with_retry(graph, None, config)
 
 
-async def run_map_phase(job_id: str, companies: list[str], pool, search_days: int = 30) -> MasterComparisonState:
+async def run_map_phase(
+    job_id: str, companies: list[str], pool, search_days: int = 30, client_company: str | None = None
+) -> MasterComparisonState:
     """Map: run each company's graph concurrently in isolation. Each run pauses
     at the HITL gate (interrupt_before=["publish_report"]) once a report is
     drafted - nothing is published or compared yet. Call resume_and_finalize
-    once a human has reviewed and approved which companies to include."""
+    once a human has reviewed and approved which companies to include.
+
+    If client_company names one of the companies and we already have a
+    report_history entry for it younger than CLIENT_REPORT_CACHE_MAX_AGE_DAYS,
+    that company reuses the cached report instead of researching it again -
+    see run_company_with_cached_report."""
     master_state = MasterComparisonState(
         job_id=job_id,
         companies=companies,
@@ -170,8 +207,15 @@ async def run_map_phase(job_id: str, companies: list[str], pool, search_days: in
         created_at=datetime.now(timezone.utc),
     )
 
+    async def _run(company: str) -> tuple[str, dict]:
+        if company == client_company:
+            cached_report = await get_recent_company_report(pool, company, CLIENT_REPORT_CACHE_MAX_AGE_DAYS)
+            if cached_report is not None:
+                return await run_company_with_cached_report(pool, company, job_id, cached_report)
+        return await run_company(pool, company, job_id, search_days)
+
     results = await asyncio.gather(
-        *(run_company(pool, company, job_id, search_days) for company in companies),
+        *(_run(company) for company in companies),
         return_exceptions=True,
     )
 

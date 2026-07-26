@@ -26,7 +26,13 @@ async def run_tracker(request: RunRequest, http_request: Request) -> RunResponse
     if request.client_company and request.client_company not in companies:
         companies.append(request.client_company)
 
-    master_state = await run_map_phase(job_id=job_id, companies=companies, pool=pool, search_days=request.search_days)
+    master_state = await run_map_phase(
+        job_id=job_id,
+        companies=companies,
+        pool=pool,
+        search_days=request.search_days,
+        client_company=request.client_company,
+    )
 
     return RunResponse(
         job_id=master_state.job_id,

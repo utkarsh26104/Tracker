@@ -129,3 +129,20 @@ means a production deploy that forgets to set it is silently wide open, which is
 configured. `/health` is intentionally outside the router (unauthenticated), since Render's
 health checks and uptime monitors hit it without credentials. The Streamlit UI sends the key via
 an `X-API-Key` header (`TRACKER_API_KEY` env var / Streamlit secret) on every request.
+
+**Client report caching** (`master_graph.py`'s `run_map_phase`/`run_company_with_cached_report`,
+`app/db/history.py`'s `get_recent_company_report`): a consultancy re-runs this tool repeatedly
+for the *same* client against different competitor sets over time — re-researching the client
+itself on every run burns Tavily/Groq quota for data that hasn't gone stale.  When
+`client_company` names one of the run's companies and `report_history` already has a `company`
+report for it younger than `CLIENT_REPORT_CACHE_MAX_AGE_DAYS` (30), that company skips
+Scout/Brain/Writer entirely and reuses the cached report — `route_history` gets seeded with
+`"Reused cached report..."` as the first entry so the reviewer can see this in the UI (📦 badge)
+and the "try again" button (`retry_company`) still works normally if they want a real search
+instead. This is implemented by seeding the graph's initial state with `final_report` already
+set and `max_loops=0`, which makes the Supervisor's *deterministic* guardrail (not an LLM call)
+force `FINISH` on the very first `supervisor_node` invocation — the graph still creates a real
+checkpointed thread and pauses at the normal `interrupt_before=["publish_report"]` gate, so
+`/tracker/approve`'s `resume_one` needs no special-casing at all. Competitors are never cached
+this way, only the named `client_company` — the whole point of a run is fresh intel on
+competitors specifically.

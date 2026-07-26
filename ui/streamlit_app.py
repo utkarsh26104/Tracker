@@ -227,6 +227,9 @@ elif st.session_state.phase == "review":
         label = f"{emoji} {company} - {status}"
         if company == st.session_state.client_company:
             label += " 👑 (your client)"
+        route_history = result["company_route_histories"].get(company, [])
+        if route_history and route_history[0].startswith("Reused cached report"):
+            label += " 📦 (reused recent data, not freshly searched)"
         with st.expander(label, expanded=True):
             if company in result["company_reports"]:
                 checked = st.checkbox("Approve for publication", value=True, key=f"approve_{company}")

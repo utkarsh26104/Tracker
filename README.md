@@ -87,6 +87,12 @@ competitor of one) and the Writer treats hits as authoritative background, not j
 finding. Re-running the script after editing the CSV updates existing rows rather than
 duplicating them (upserts keyed on the client+competitor pair).
 
+Naming a client company also skips re-researching it if it was already researched in the last 30
+days - a consultancy typically re-runs this against many different competitor sets for the same
+client over time, and freshly re-searching the client itself on every single run would burn
+Tavily/Groq quota on data that hasn't gone stale. The review step flags reused reports (📦) and
+the "try again" button forces a real search if the cached data isn't good enough.
+
 **Windows note:** always launch via `scripts/serve.py`, not a bare `uvicorn app.main:app`.
 psycopg's async mode needs a `SelectorEventLoop`; uvicorn's default loop factory
 unconditionally returns `ProactorEventLoop` on Windows regardless of any
