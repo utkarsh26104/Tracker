@@ -9,6 +9,7 @@ class RunRequest(BaseModel):
     companies: list[str]
     search_days: int = 30  # how far back Scout's web search looks - see the UI's recency dropdown
     client_company: str | None = None  # if set, final synthesis becomes a client-focused strategy
+    company_urls: dict[str, str] = {}  # optional company -> URL, seeded as a finding before Scout runs
 
 
 class ApproveRequest(BaseModel):

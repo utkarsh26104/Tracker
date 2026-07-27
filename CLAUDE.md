@@ -168,3 +168,35 @@ Scout never ran) produces a report, which then goes through `run_company_with_ca
 same way a cached system report would. A **stale** upload does *not* get this shortcut — it falls
 through to the normal full pipeline, where Brain still includes it (marked stale) alongside real
 Scout findings, so the final report blends both rather than ignoring the old dossier outright.
+
+**Seed URLs for thin-coverage companies** (`app/services/scraping.py`'s
+`fetch_company_site_findings`/`fetch_url_as_finding`, `run_company`'s `seed_url` param,
+`RunRequest.company_urls`): observed in real use — small/local/private businesses with little
+press coverage (e.g. `newme`, `bonkers`) can drive the Supervisor through every one of its
+`max_loops` Search iterations without ever finding enough to write from, then fail outright on
+the final forced Write once that also collides with Groq's rate limit (see below). The UI's
+Competitors textarea accepts an optional `Name | https://url` per line; `fetch_company_site_findings`
+fetches that URL, then does a light same-domain crawl (capped at `_MAX_SEED_PAGES`, default 4)
+following links whose href/text match product-, discount-, or review-related keywords
+(`_RELEVANT_LINK_KEYWORDS`) — deliberately *not* a general-purpose spider, just enough to surface
+launches/pricing/discounts and customer reviews for a company that generic web search can't find
+anything about. Each page's text extraction (`_extract_finding`, shared by both functions) strips
+`<script>/<style>/<nav>/<footer>/<header>` and scopes `get_text()` to `<body>` specifically —
+extracting from the whole document would leak `<title>` text into the snippet and could even make
+a genuinely empty page look non-empty. Review-page text isn't given special rating-extraction
+logic — it becomes an ordinary `ScoutFinding` like any other, so it flows through Brain's existing
+sentiment pipeline (`summarize_sentiment` on every scouted snippet) automatically, and the Writer
+is trusted to pull a mentioned rating out of messy page text directly rather than a fragile regex
+trying to do it upstream. All fetched findings seed `scouted_data` *before* the graph runs, with
+`route_history` recording `"Seeded with N page(s) from provided URL: ..."` as the first entry. A
+failed fetch (bad URL, network error, empty homepage) returns `[]`/`None` and is logged, not
+raised — Scout still runs normally either way, this is purely additive. Scoped to competitors
+only (via the textarea); the client already has the richer dossier-upload path above, which fully
+replaces the need for this on the client specifically.
+
+**UI request timeout vs. real worst-case run time**: `call_api_with_progress`'s `httpx.request`
+timeout is 600s, not the more obvious-looking 300s — a multi-company run's worst case isn't one
+slow LLM call, it's `(loop cap) × (per-loop work + rate-limit retries)`, and companies running
+*concurrently* share Groq's per-minute token budget, so several of them hitting that worst case
+at once (as happened with the thin-coverage case above) is a real scenario, not a hypothetical
+one. 300s was observed too tight for it in practice.

@@ -107,7 +107,15 @@ def call_api_with_progress(method: str, url: str, json: dict, running_label: str
 
     def _do_request():
         try:
-            resp = httpx.request(method, url, json=json, headers=API_HEADERS, timeout=300.0)
+            # A multi-company run's worst case isn't bounded by a single LLM
+            # call - it's (loop cap) x (per-loop work + rate-limit retries),
+            # and concurrent companies sharing Groq's per-minute token budget
+            # can push several of them into that worst case at once. 300s
+            # was observed to be too tight for that combination in practice;
+            # 600s gives real (slow but legitimate) runs room to finish
+            # instead of the UI reporting "timed out" on top of - or instead
+            # of - the backend's own per-company FAILED status.
+            resp = httpx.request(method, url, json=json, headers=API_HEADERS, timeout=600.0)
             resp.raise_for_status()
             result["data"] = resp.json()
         except httpx.HTTPError as e:
@@ -196,7 +204,17 @@ if st.session_state.phase == "input":
                     st.error(f"Upload failed: {e}")
 
     st.write("Enter one competitor per line, then run the research agents.")
-    raw = st.text_area("Competitors", value="Stripe\nAdyen", height=120)
+    raw = st.text_area(
+        "Competitors",
+        value="Stripe\nAdyen",
+        height=120,
+        help="One per line. If a competitor has little web coverage (e.g. a small, local, or "
+        "private business), add its own website after a `|` to seed the research directly from "
+        "it - e.g. `LocalBrand | https://localbrand.com`. This also does a light crawl of that "
+        "site for product/launch, discount, and review pages, so customer sentiment gets "
+        "analyzed too. Otherwise a thin-coverage company can burn through several fruitless "
+        "search loops before giving up.",
+    )
     recency_label = st.selectbox(
         "How far back should Scout search?",
         options=list(RECENCY_OPTIONS.keys()),
@@ -208,7 +226,21 @@ if st.session_state.phase == "input":
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("Run Research", type="primary"):
-            companies = [line.strip() for line in raw.splitlines() if line.strip()]
+            companies = []
+            company_urls = {}
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if "|" in line:
+                    name, url = (part.strip() for part in line.split("|", 1))
+                    if name:
+                        companies.append(name)
+                        if url:
+                            company_urls[name] = url
+                else:
+                    companies.append(line)
+
             if not companies and not client_company.strip():
                 st.error("Enter at least one company.")
             else:
@@ -220,6 +252,7 @@ if st.session_state.phase == "input":
                         "companies": companies,
                         "search_days": search_days,
                         "client_company": st.session_state.client_company or None,
+                        "company_urls": company_urls,
                     },
                     f"Researching {len(companies)} companies concurrently ({recency_label.lower()})...",
                     RESEARCH_MESSAGES,

@@ -20,6 +20,7 @@ from app.graph.state import (
 from app.llm.groq_client import get_writer_llm
 from app.memory.client_context import query_client_context
 from app.memory.client_uploads import get_client_upload
+from app.services.scraping import fetch_company_site_findings
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +131,9 @@ async def _ainvoke_with_retry(graph, initial_input, config: dict, max_attempts: 
             current_input = None if snapshot.values else initial_input
 
 
-async def run_company(pool, company: str, job_id: str, search_days: int = 30) -> tuple[str, dict]:
+async def run_company(
+    pool, company: str, job_id: str, search_days: int = 30, seed_url: str | None = None
+) -> tuple[str, dict]:
     # Each concurrently-running company gets its own checkpointer instance
     # (own internal lock), sharing the pool for actual connections - see
     # make_checkpointer's docstring for why one shared instance serializes
@@ -141,6 +144,23 @@ async def run_company(pool, company: str, job_id: str, search_days: int = 30) ->
     thread_id = _thread_id(job_id, company)
     config = {"configurable": {"thread_id": thread_id}}
     initial_state = new_agent_state(company=company, job_id=thread_id, search_days=search_days)
+
+    if seed_url:
+        # Small/local businesses often have thin-to-nonexistent Tavily
+        # coverage, which otherwise drives the Supervisor through repeated
+        # fruitless Search loops (observed: 6-loop cap hit, then the final
+        # forced Write still had nothing concrete to work from). Seeding a
+        # known-good URL (e.g. the company's own site) up front - plus a
+        # light same-domain crawl for product/discount/review pages, see
+        # fetch_company_site_findings - gives the Writer something real
+        # even if Tavily comes up empty.
+        seed_findings = await asyncio.to_thread(fetch_company_site_findings, seed_url)
+        if seed_findings:
+            initial_state["scouted_data"] = seed_findings
+            initial_state["route_history"] = [
+                f"Seeded with {len(seed_findings)} page(s) from provided URL: {seed_url}"
+            ]
+
     result = await _ainvoke_with_retry(graph, initial_state, config)
     return company, result
 
@@ -234,7 +254,12 @@ async def retry_company(pool, job_id: str, company: str) -> dict:
 
 
 async def run_map_phase(
-    job_id: str, companies: list[str], pool, search_days: int = 30, client_company: str | None = None
+    job_id: str,
+    companies: list[str],
+    pool,
+    search_days: int = 30,
+    client_company: str | None = None,
+    company_urls: dict[str, str] | None = None,
 ) -> MasterComparisonState:
     """Map: run each company's graph concurrently in isolation. Each run pauses
     at the HITL gate (interrupt_before=["publish_report"]) once a report is
@@ -250,7 +275,13 @@ async def run_map_phase(
     of a live search. A stale or absent dossier falls through to the normal
     full pipeline, where Brain includes it as background regardless of age -
     so a stale upload still gets mixed with fresh Scout findings rather than
-    being ignored outright."""
+    being ignored outright.
+
+    company_urls optionally maps a company to a URL to seed findings from
+    before Scout runs (see run_company/fetch_company_site_findings) - for
+    companies with thin-to-none Tavily coverage, e.g. small/local
+    businesses."""
+    company_urls = company_urls or {}
     master_state = MasterComparisonState(
         job_id=job_id,
         companies=companies,
@@ -279,7 +310,7 @@ async def run_map_phase(
                             f"< {CLIENT_REPORT_CACHE_MAX_AGE_DAYS} days old) - no fresh search performed"
                         ),
                     )
-        return await run_company(pool, company, job_id, search_days)
+        return await run_company(pool, company, job_id, search_days, seed_url=company_urls.get(company))
 
     results = await asyncio.gather(
         *(_run(company) for company in companies),

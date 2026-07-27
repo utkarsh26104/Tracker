@@ -46,6 +46,7 @@ async def run_tracker(request: RunRequest, http_request: Request) -> RunResponse
         pool=pool,
         search_days=request.search_days,
         client_company=request.client_company,
+        company_urls=request.company_urls,
     )
 
     return RunResponse(

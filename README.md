@@ -100,6 +100,16 @@ from it alone with no web search at all. If it's older, it still gets pulled in 
 blended with fresh Scout findings rather than being ignored - so an outdated-but-useful dossier
 never goes to waste.
 
+### Small/local businesses with thin web coverage
+
+Generic web search can turn up little or nothing for a smaller, local, or private competitor,
+which drives the Supervisor through repeated fruitless search loops before giving up. If you
+already know the company's own website, add it directly on a Competitors line as
+`Name | https://example.com` - that gets fetched and seeded as findings before the graph even
+starts, along with a light crawl of that same site for product/launch, discount, and review
+pages, so there's always something concrete to write from (and real customer sentiment to
+analyze) even if Tavily comes up empty.
+
 **Windows note:** always launch via `scripts/serve.py`, not a bare `uvicorn app.main:app`.
 psycopg's async mode needs a `SelectorEventLoop`; uvicorn's default loop factory
 unconditionally returns `ProactorEventLoop` on Windows regardless of any
