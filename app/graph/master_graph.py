@@ -198,6 +198,7 @@ async def run_company(
         seed_findings = site_findings + marketplace_findings
         if seed_findings:
             initial_state["scouted_data"] = seed_findings
+            initial_state["seeded_from_url"] = True
             source_parts = []
             if site_findings:
                 source_parts.append(f"{len(site_findings)} page(s) from provided URL: {seed_url}")

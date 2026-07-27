@@ -3,13 +3,31 @@
 
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.graph.master_graph import run_map_phase
-from app.graph.state import ScoutFinding
+from app.graph.state import RouteDecision, ScoutFinding
 from tests.conftest import make_content_driven_supervisor_llm, make_scripted_writer_llm
+
+
+def _never_satisfied_supervisor_llm():
+    """Always routes Search, except once a report exists (routes FINISH) -
+    used to deterministically drive a company all the way to the loop cap
+    without ever letting the Supervisor's own judgment call Write."""
+
+    async def _ainvoke(messages):
+        human_text = messages[1][1]
+        if "Final report drafted: True" in human_text:
+            return RouteDecision(next="FINISH", reasoning="done")
+        return RouteDecision(next="Search", reasoning="still not enough")
+
+    fake_structured = MagicMock()
+    fake_structured.ainvoke = AsyncMock(side_effect=_ainvoke)
+    fake_llm = MagicMock()
+    fake_llm.with_structured_output.return_value = fake_structured
+    return fake_llm
 
 
 @pytest.mark.asyncio
@@ -134,3 +152,44 @@ async def test_no_seed_url_skips_the_fetch_entirely(pg_pool, fake_scout_finding)
 
     fetch_mock.assert_not_called()
     marketplace_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_seeded_company_still_produces_a_report_when_loop_cap_is_hit(pg_pool):
+    """End-to-end: a seeded company whose Supervisor never feels satisfied
+    (always routes Search) still gets a published report once the loop cap
+    forces a final Write, instead of failing outright - see writer.py's
+    FORCED_FINAL_ATTEMPT_INSTRUCTION and the deterministic override in
+    writer_node."""
+    job_id = f"seed-url-test-{uuid.uuid4()}"
+    company = f"LocalBrand-{uuid.uuid4()}"
+    site_findings = [
+        ScoutFinding(
+            source_url="https://localbrand.example",
+            title="LocalBrand - Home",
+            snippet="LocalBrand sells handmade candles.",
+            fetched_at=datetime.now(timezone.utc),
+        )
+    ]
+
+    with (
+        patch("app.graph.supervisor.get_supervisor_llm", return_value=_never_satisfied_supervisor_llm()),
+        patch(
+            "app.graph.writer.get_writer_llm",
+            return_value=make_scripted_writer_llm(
+                "# LocalBrand\nThin but real data from its own site.", sufficient_data=False
+            ),
+        ),
+        patch("app.graph.scout.search_company", return_value=[]),  # Tavily finds nothing, every loop
+        patch("app.graph.master_graph.fetch_company_site_findings", return_value=site_findings),
+        patch("app.graph.master_graph.search_marketplace_reviews", return_value=[]),
+    ):
+        result = await run_map_phase(
+            job_id=job_id,
+            companies=[company],
+            pool=pg_pool,
+            company_urls={company: "https://localbrand.example"},
+        )
+
+    assert result.company_statuses[company].value == "awaiting_approval"
+    assert result.company_reports[company] == "# LocalBrand\nThin but real data from its own site."

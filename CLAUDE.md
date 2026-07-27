@@ -206,6 +206,24 @@ indexed. Runs concurrently with the site crawl (`asyncio.gather`) since both are
 `asyncio.to_thread` calls. Only triggered when a seed URL is provided — same opt-in signal as the
 site crawl, not a blanket extra Tavily call on every company.
 
+**Forced report on the final loop for a seeded company** (`app/graph/state.py`'s
+`AgentState.seeded_from_url`, `writer.py`'s `FORCED_FINAL_ATTEMPT_INSTRUCTION`/`force_report`):
+even with seeded data, the Writer can still self-assess `sufficient_data=false` and bounce the
+Supervisor back into another Search loop — for a company that was seeded specifically *because*
+Tavily has nothing for it, those extra loops just burn Groq calls (and rate-limit exposure) on
+searches that were never going to find anything, right up until the loop cap forces one last
+Write anyway. `run_company` sets `seeded_from_url=True` on the initial state whenever
+`fetch_company_site_findings`/`search_marketplace_reviews` returned anything; `writer_node`
+checks `state["loop_count"] > state["max_loops"]` (the exact condition `supervisor_node`'s own
+guardrail uses to force this Write in the first place) together with that flag, and if both hold,
+appends an instruction telling the Writer this is the last chance and it must publish *something*
+from what's available rather than declining again. Since an LLM won't follow that instruction
+with certainty, `writer_node` also has a deterministic backstop: it accepts `report_markdown`
+in this specific case even if `sufficient_data` still comes back `false`, as long as the
+markdown isn't empty — same "don't just trust the model under pressure" principle as the
+Supervisor's own loop-count guardrail. A truly empty response still correctly falls through to
+`insufficient_data_flag=True` rather than publishing nothing dressed up as a report.
+
 **UI request timeout vs. real worst-case run time**: `call_api_with_progress`'s `httpx.request`
 timeout is 600s, not the more obvious-looking 300s — a multi-company run's worst case isn't one
 slow LLM call, it's `(loop cap) × (per-loop work + rate-limit retries)`, and companies running

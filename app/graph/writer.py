@@ -37,6 +37,15 @@ and a report that runs long risks being cut off mid-generation and failing to pa
 If the available data is too thin to write a credible report, set sufficient_data=false \
 and explain what's missing in missing_info instead of fabricating content."""
 
+FORCED_FINAL_ATTEMPT_INSTRUCTION = """
+
+This is the final research pass for this company - its data was seeded from its own website \
+and/or Amazon/Flipkart listings and reviews because general web search found little to nothing, \
+and the research loop budget is now exhausted. You must produce a report from whatever data is \
+available here, no matter how thin - do not set sufficient_data=false at this point. If the data \
+is genuinely minimal, write a short, honest report saying so plainly (and that primary research \
+would be needed for a fuller picture) rather than leaving the reviewer with nothing at all."""
+
 
 # Real web snippets can run to thousands of tokens each; free-tier LLM APIs
 # (e.g. Groq's 8K TPM limit) reject a single request that large. Cap per-item
@@ -126,14 +135,31 @@ async def writer_node(state: AgentState) -> dict:
     # under the default best-effort function_calling method.
     llm = get_writer_llm().with_structured_output(WriterOutput, method="json_schema", strict=True)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    system_prompt = SYSTEM_PROMPT_TEMPLATE.format(today=today)
+
+    # supervisor_node's own deterministic guardrail forces this Write once
+    # loop_count exceeds max_loops - for a URL-seeded company (thin/no
+    # coverage elsewhere, see run_company), this is its last chance before
+    # the whole company fails outright. Force a report from whatever was
+    # pulled rather than letting a self-assessed "not enough data" call
+    # throw away a company that already got the extra seeding treatment.
+    force_report = state["loop_count"] > state["max_loops"] and state.get("seeded_from_url", False)
+    if force_report:
+        system_prompt += FORCED_FINAL_ATTEMPT_INSTRUCTION
+
     output: WriterOutput = await llm.ainvoke(
         [
-            ("system", SYSTEM_PROMPT_TEMPLATE.format(today=today)),
+            ("system", system_prompt),
             ("human", _build_context(state)),
         ]
     )
 
-    if output.sufficient_data:
+    # Trust the LLM's own report_markdown even if it still self-assessed
+    # sufficient_data=false - the prompt instructs it not to, but LLMs don't
+    # follow instructions with certainty, so this is the deterministic
+    # backstop (same principle as the Supervisor's own loop-count guardrail:
+    # don't rely solely on the model doing the right thing under pressure).
+    if output.sufficient_data or (force_report and output.report_markdown.strip()):
         return {"final_report": output.report_markdown, "insufficient_data_flag": False}
 
     return {

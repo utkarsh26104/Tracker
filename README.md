@@ -113,6 +113,11 @@ shell, no real content) and rarely hosts honest reviews anyway. Between the thre
 almost always something concrete to write from and real customer sentiment to analyze, even when
 Tavily's general search comes up empty.
 
+A seeded company also won't be abandoned just because the Writer isn't fully satisfied - if it
+still hasn't produced a report by the time the search-loop budget runs out, the final attempt is
+told to publish the best report it can from whatever was pulled rather than declining again, so a
+thin-but-real report beats no report at all.
+
 If a company still fails outright (most commonly a Groq free-tier rate limit under real load),
 the review step shows the actual reason instead of a generic notice - including Groq's own
 reported wait time for rate limits specifically (e.g. "try again in 16m 32s"), so you know

@@ -73,6 +73,7 @@ class AgentState(TypedDict):
     job_id: str
     search_days: int
     messages: Annotated[list[AnyMessage], add_messages]
+    seeded_from_url: bool  # True if scouted_data was seeded from a user-provided URL (see run_company)
     scouted_data: list[ScoutFinding]
     historical_context: list[HistoricalMatch]
     client_context: list[ClientContextMatch]
@@ -115,6 +116,7 @@ def new_agent_state(company: str, job_id: str, max_loops: int = 6, search_days: 
         job_id=job_id,
         search_days=search_days,
         messages=[],
+        seeded_from_url=False,
         scouted_data=[],
         historical_context=[],
         client_context=[],
