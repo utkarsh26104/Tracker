@@ -194,6 +194,18 @@ raised — Scout still runs normally either way, this is purely additive. Scoped
 only (via the textarea); the client already has the richer dossier-upload path above, which fully
 replaces the need for this on the client specifically.
 
+**Amazon/Flipkart marketplace search** (`app/services/scraping.py`'s `search_marketplace_reviews`,
+called alongside `fetch_company_site_findings` whenever a seed URL is given — see `run_company`):
+found in real use that a company's own site is often JS-rendered (a plain `httpx` fetch sees an
+empty shell, no real product/review content at all), and a company's own site rarely has honest
+customer sentiment anyway. Rather than writing a direct Amazon/Flipkart scraper — both are
+aggressively bot-hostile (CAPTCHAs, rate limiting) and would likely just get blocked — this reuses
+the *existing* Tavily integration with `include_domains=["amazon.in", "amazon.com",
+"flipkart.com"]`, which restricts results server-side to pages Tavily's own crawler already
+indexed. Runs concurrently with the site crawl (`asyncio.gather`) since both are independent
+`asyncio.to_thread` calls. Only triggered when a seed URL is provided — same opt-in signal as the
+site crawl, not a blanket extra Tavily call on every company.
+
 **UI request timeout vs. real worst-case run time**: `call_api_with_progress`'s `httpx.request`
 timeout is 600s, not the more obvious-looking 300s — a multi-company run's worst case isn't one
 slow LLM call, it's `(loop cap) × (per-loop work + rate-limit retries)`, and companies running

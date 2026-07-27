@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from app.services.scraping import fetch_company_site_findings, fetch_url_as_finding
+from app.services.scraping import fetch_company_site_findings, fetch_url_as_finding, search_marketplace_reviews
 
 
 def _fake_response(html: str, status_code: int = 200) -> MagicMock:
@@ -127,3 +127,28 @@ def test_fetch_company_site_findings_returns_empty_list_when_homepage_unreachabl
         findings = fetch_company_site_findings("https://unreachable.example")
 
     assert findings == []
+
+
+def test_search_marketplace_reviews_restricts_to_marketplace_domains():
+    fake_client = MagicMock()
+    fake_client.search.return_value = {
+        "results": [
+            {
+                "url": "https://www.amazon.in/dp/xyz",
+                "title": "LocalBrand Candle Set - Amazon.in",
+                "content": "4.3 out of 5 stars, 1,204 ratings. Great scent, arrived on time.",
+                "published_date": None,
+            }
+        ]
+    }
+
+    with patch("app.services.scraping._get_client", return_value=fake_client):
+        findings = search_marketplace_reviews("LocalBrand")
+
+    assert len(findings) == 1
+    assert findings[0].source_url == "https://www.amazon.in/dp/xyz"
+    assert "4.3 out of 5 stars" in findings[0].snippet
+
+    _, kwargs = fake_client.search.call_args
+    assert kwargs["include_domains"] == ["amazon.in", "amazon.com", "flipkart.com"]
+    assert "LocalBrand" in kwargs["query"]

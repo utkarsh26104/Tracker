@@ -24,6 +24,19 @@ def _get_client() -> TavilyClient:
 _TAVILY_MAX_QUERY_CHARS = 400
 
 
+def _findings_from_tavily_response(response: dict) -> list[ScoutFinding]:
+    return [
+        ScoutFinding(
+            source_url=result["url"],
+            title=result.get("title", ""),
+            published_date=result.get("published_date"),
+            snippet=result.get("content", ""),
+            fetched_at=datetime.now(timezone.utc),
+        )
+        for result in response.get("results", [])
+    ]
+
+
 def search_company(company: str, instructions: str | None = None, days: int = 30) -> list[ScoutFinding]:
     query = f"{company} latest news pricing product launch"
     if instructions:
@@ -41,19 +54,34 @@ def search_company(company: str, instructions: str | None = None, days: int = 30
     # coverage for less-followed companies - the Writer already handles thin
     # results gracefully via sufficient_data=false either way.
     response = _get_client().search(query=query, max_results=5, search_depth="basic", topic="news", days=days)
+    return _findings_from_tavily_response(response)
 
-    findings = []
-    for result in response.get("results", []):
-        findings.append(
-            ScoutFinding(
-                source_url=result["url"],
-                title=result.get("title", ""),
-                published_date=result.get("published_date"),
-                snippet=result.get("content", ""),
-                fetched_at=datetime.now(timezone.utc),
-            )
-        )
-    return findings
+
+# amazon.in/flipkart.com specifically (not a blanket "site:amazon.com OR
+# site:flipkart.com" free-text query) because Tavily's include_domains
+# restricts results server-side - more reliable than hoping the query text
+# alone biases results there, and works the same way regardless of query
+# phrasing.
+_MARKETPLACE_DOMAINS = ["amazon.in", "amazon.com", "flipkart.com"]
+
+
+def search_marketplace_reviews(company: str) -> list[ScoutFinding]:
+    """Amazon/Flipkart product listings and customer reviews, via Tavily's
+    own already-indexed pages rather than scraping either site directly -
+    both are notoriously bot-hostile (CAPTCHAs, aggressive rate limiting),
+    and a plain httpx fetch would likely just get blocked outright even
+    where fetch_company_site_findings works fine on a company's own site.
+    Meant as a supplement for brands that sell through these marketplaces
+    but have thin coverage everywhere else, particularly ones whose own
+    site is JS-rendered (a plain HTML fetch sees an empty shell, no real
+    product/review content) - marketplace listings are consistently
+    server-rendered and contain real customer sentiment a company's own
+    site rarely does."""
+    query = f"{company} reviews ratings price"
+    response = _get_client().search(
+        query=query, max_results=5, search_depth="basic", topic="general", include_domains=_MARKETPLACE_DOMAINS
+    )
+    return _findings_from_tavily_response(response)
 
 
 _FETCH_MAX_CHARS = 2000

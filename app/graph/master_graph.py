@@ -20,7 +20,7 @@ from app.graph.state import (
 from app.llm.groq_client import get_writer_llm
 from app.memory.client_context import query_client_context
 from app.memory.client_uploads import get_client_upload
-from app.services.scraping import fetch_company_site_findings
+from app.services.scraping import fetch_company_site_findings, search_marketplace_reviews
 
 logger = logging.getLogger(__name__)
 
@@ -184,15 +184,26 @@ async def run_company(
         # fruitless Search loops (observed: 6-loop cap hit, then the final
         # forced Write still had nothing concrete to work from). Seeding a
         # known-good URL (e.g. the company's own site) up front - plus a
-        # light same-domain crawl for product/discount/review pages, see
-        # fetch_company_site_findings - gives the Writer something real
-        # even if Tavily comes up empty.
-        seed_findings = await asyncio.to_thread(fetch_company_site_findings, seed_url)
+        # light same-domain crawl for product/discount/review pages (see
+        # fetch_company_site_findings) and Amazon/Flipkart listings+reviews
+        # (see search_marketplace_reviews, run concurrently) - gives the
+        # Writer something real even if Tavily's normal news search comes
+        # up empty. Marketplace listings matter especially for a company
+        # whose own site is JS-rendered, where a plain HTML fetch sees an
+        # empty shell and no real product/review content at all.
+        site_findings, marketplace_findings = await asyncio.gather(
+            asyncio.to_thread(fetch_company_site_findings, seed_url),
+            asyncio.to_thread(search_marketplace_reviews, company),
+        )
+        seed_findings = site_findings + marketplace_findings
         if seed_findings:
             initial_state["scouted_data"] = seed_findings
-            initial_state["route_history"] = [
-                f"Seeded with {len(seed_findings)} page(s) from provided URL: {seed_url}"
-            ]
+            source_parts = []
+            if site_findings:
+                source_parts.append(f"{len(site_findings)} page(s) from provided URL: {seed_url}")
+            if marketplace_findings:
+                source_parts.append(f"{len(marketplace_findings)} marketplace listing(s)/review(s)")
+            initial_state["route_history"] = ["Seeded with " + " and ".join(source_parts)]
 
     result = await _ainvoke_with_retry(graph, initial_state, config)
     return company, result

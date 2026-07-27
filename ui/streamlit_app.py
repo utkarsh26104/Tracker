@@ -210,10 +210,11 @@ if st.session_state.phase == "input":
         height=120,
         help="One per line. If a competitor has little web coverage (e.g. a small, local, or "
         "private business), add its own website after a `|` to seed the research directly from "
-        "it - e.g. `LocalBrand | https://localbrand.com`. This also does a light crawl of that "
-        "site for product/launch, discount, and review pages, so customer sentiment gets "
-        "analyzed too. Otherwise a thin-coverage company can burn through several fruitless "
-        "search loops before giving up.",
+        "it - e.g. `LocalBrand | https://localbrand.com`. This also crawls that site for "
+        "product/launch and discount pages, and searches Amazon/Flipkart for the company's own "
+        "listings and customer reviews - so sentiment analysis has something real to work with "
+        "even when the company's site is JS-rendered or has no reviews of its own. Otherwise a "
+        "thin-coverage company can burn through several fruitless search loops before giving up.",
     )
     recency_label = st.selectbox(
         "How far back should Scout search?",

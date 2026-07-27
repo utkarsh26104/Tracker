@@ -106,9 +106,12 @@ Generic web search can turn up little or nothing for a smaller, local, or privat
 which drives the Supervisor through repeated fruitless search loops before giving up. If you
 already know the company's own website, add it directly on a Competitors line as
 `Name | https://example.com` - that gets fetched and seeded as findings before the graph even
-starts, along with a light crawl of that same site for product/launch, discount, and review
-pages, so there's always something concrete to write from (and real customer sentiment to
-analyze) even if Tavily comes up empty.
+starts, along with a light crawl of that same site for product/launch, discount, and review pages.
+It also searches Amazon and Flipkart specifically for that company's listings and customer
+reviews - useful since a company's own site is often JS-rendered (a plain fetch sees an empty
+shell, no real content) and rarely hosts honest reviews anyway. Between the three sources, there's
+almost always something concrete to write from and real customer sentiment to analyze, even when
+Tavily's general search comes up empty.
 
 If a company still fails outright (most commonly a Groq free-tier rate limit under real load),
 the review step shows the actual reason instead of a generic notice - including Groq's own
