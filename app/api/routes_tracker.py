@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -16,11 +17,13 @@ from app.api.schemas import (
     UploadClientFileResponse,
 )
 from app.db.history import list_history
-from app.graph.master_graph import resume_and_finalize, retry_company, run_map_phase
+from app.graph.master_graph import describe_exception, resume_and_finalize, retry_company, run_map_phase
 from app.graph.state import CompanyJobStatus
 from app.memory.client_uploads import upsert_client_upload
 from app.services.document_parsing import extract_text
 from app.services.report_chat import answer_report_question
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tracker", tags=["tracker"], dependencies=[Depends(require_api_key)])
 
@@ -54,6 +57,7 @@ async def run_tracker(request: RunRequest, http_request: Request) -> RunResponse
         company_statuses=master_state.company_statuses,
         company_reports=master_state.company_reports,
         company_route_histories=master_state.company_route_histories,
+        company_errors=master_state.company_errors,
         comparison_matrix=master_state.comparison_matrix,
     )
 
@@ -111,6 +115,19 @@ async def retry_tracker(request: RetryRequest, http_request: Request) -> RetryRe
         result = await retry_company(pool, job_id=request.job_id, company=request.company)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        # e.g. groq.RateLimitError surfacing from _ainvoke_with_retry - a
+        # retry attempt can hit the exact same wall the original run did.
+        # Report it as a normal FAILED result (with the real reason), not
+        # an opaque 500, so the UI can show the reviewer something actionable.
+        logger.exception("Retry failed for %s (job %s)", request.company, request.job_id)
+        return RetryResponse(
+            company=request.company,
+            status=CompanyJobStatus.FAILED,
+            report=None,
+            route_history=[],
+            error=describe_exception(e),
+        )
 
     report = result.get("final_report")
     return RetryResponse(
@@ -138,5 +155,6 @@ async def approve_tracker(request: ApproveRequest, http_request: Request) -> Run
         company_statuses=master_state.company_statuses,
         company_reports=master_state.company_reports,
         company_route_histories=master_state.company_route_histories,
+        company_errors=master_state.company_errors,
         comparison_matrix=master_state.comparison_matrix,
     )

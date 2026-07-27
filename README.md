@@ -110,6 +110,11 @@ starts, along with a light crawl of that same site for product/launch, discount,
 pages, so there's always something concrete to write from (and real customer sentiment to
 analyze) even if Tavily comes up empty.
 
+If a company still fails outright (most commonly a Groq free-tier rate limit under real load),
+the review step shows the actual reason instead of a generic notice - including Groq's own
+reported wait time for rate limits specifically (e.g. "try again in 16m 32s"), so you know
+whether it's worth clicking "try again" now or coming back later.
+
 **Windows note:** always launch via `scripts/serve.py`, not a bare `uvicorn app.main:app`.
 psycopg's async mode needs a `SelectorEventLoop`; uvicorn's default loop factory
 unconditionally returns `ProactorEventLoop` on Windows regardless of any

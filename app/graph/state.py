@@ -103,6 +103,7 @@ class MasterComparisonState(BaseModel):
     company_statuses: dict[str, CompanyJobStatus] = {}
     company_reports: dict[str, str] = {}
     company_route_histories: dict[str, list[str]] = {}
+    company_errors: dict[str, str] = {}  # user-facing failure reason, keyed by company (see describe_exception)
     comparison_matrix: str | None = None
     created_at: datetime
     completed_at: datetime | None = None

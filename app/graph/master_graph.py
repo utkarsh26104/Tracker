@@ -88,14 +88,47 @@ _TRANSIENT_EXCEPTIONS = (psycopg.OperationalError, requests.exceptions.Connectio
 # can keep colliding on the same recovering budget and both still exhaust
 # their retry count. Retrying at the whole-graph level spreads attempts out
 # further in time and reuses Groq's own suggested wait instead of guessing.
-_RETRY_AFTER_RE = re.compile(r"try again in ([\d.]+)s", re.IGNORECASE)
+#
+# Groq's wait format differs by which quota was hit: per-minute limits say
+# e.g. "try again in 18.5475s", but the daily (TPD) quota says e.g. "try
+# again in 16m32.304s" - the minutes group is optional so both parse. This
+# was silently broken before (the minutes weren't captured at all, so a
+# 16-minute wait parsed as a bare "5.0 * attempt" fallback guess).
+_RETRY_AFTER_RE = re.compile(r"try again in (?:(\d+)m)?([\d.]+)s", re.IGNORECASE)
+
+# The daily quota's wait can legitimately be many minutes - sleeping through
+# that inside a live request would tie up the connection for no benefit and
+# still likely blow past the UI's own timeout. Past this threshold, fail
+# fast with the real wait time in the message instead of silently hanging.
+_MAX_RATE_LIMIT_SLEEP_SECONDS = 60.0
 
 
 def _rate_limit_wait_seconds(exc: groq.RateLimitError, attempt: int) -> float:
     match = _RETRY_AFTER_RE.search(str(exc))
     if match:
-        return float(match.group(1)) + 1.0  # small buffer past Groq's own estimate
+        minutes = float(match.group(1)) if match.group(1) else 0.0
+        seconds = float(match.group(2))
+        return minutes * 60 + seconds + 1.0  # small buffer past Groq's own estimate
     return 5.0 * attempt  # fallback if the message format ever changes
+
+
+def describe_exception(exc: BaseException) -> str:
+    """A short, user-facing explanation for a failed company - surfaced in
+    the UI instead of a bare "insufficient data or an error". Groq rate
+    limits are common enough in real use (free-tier quotas) to deserve a
+    specific, actionable message with the actual wait time Groq reported."""
+    if isinstance(exc, groq.RateLimitError):
+        match = _RETRY_AFTER_RE.search(str(exc))
+        if match:
+            minutes, seconds = match.group(1), float(match.group(2))
+            wait_text = f"{minutes}m {seconds:.0f}s" if minutes else f"{seconds:.0f}s"
+        else:
+            wait_text = "a short while"
+        quota_kind = "daily" if "tokens per day" in str(exc).lower() else "per-minute"
+        return f"Groq's {quota_kind} rate limit was reached. Please try again in {wait_text}."
+    if isinstance(exc, _TRANSIENT_EXCEPTIONS):
+        return "A temporary connection issue interrupted research for this company. Please try again."
+    return f"Research failed unexpectedly: {exc}"
 
 
 def _thread_id(job_id: str, company: str) -> str:
@@ -108,9 +141,9 @@ async def _ainvoke_with_retry(graph, initial_input, config: dict, max_attempts: 
         try:
             return await graph.ainvoke(current_input, config=config)
         except (*_TRANSIENT_EXCEPTIONS, groq.RateLimitError) as e:
-            if attempt >= max_attempts:
-                raise
             wait = _rate_limit_wait_seconds(e, attempt) if isinstance(e, groq.RateLimitError) else 2 ** (attempt - 1)
+            if attempt >= max_attempts or wait > _MAX_RATE_LIMIT_SLEEP_SECONDS:
+                raise
             logger.warning(
                 "%s on attempt %d/%d for thread %s (retrying in %.1fs): %s",
                 "Rate limit" if isinstance(e, groq.RateLimitError) else "Transient error",
@@ -321,6 +354,7 @@ async def run_map_phase(
         if isinstance(outcome, BaseException):
             logger.exception("Map phase failed for %s (job %s)", company, job_id, exc_info=outcome)
             master_state.company_statuses[company] = CompanyJobStatus.FAILED
+            master_state.company_errors[company] = describe_exception(outcome)
             continue
         _, result = outcome
         master_state.company_route_histories[company] = result.get("route_history", [])
@@ -368,6 +402,7 @@ async def resume_and_finalize(
         if isinstance(outcome, BaseException):
             logger.exception("Reduce phase failed for %s (job %s)", company, job_id, exc_info=outcome)
             master_state.company_statuses[company] = CompanyJobStatus.FAILED
+            master_state.company_errors[company] = describe_exception(outcome)
             continue
         _, result = outcome
         report = result.get("final_report")

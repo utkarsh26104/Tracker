@@ -200,3 +200,20 @@ slow LLM call, it's `(loop cap) × (per-loop work + rate-limit retries)`, and co
 *concurrently* share Groq's per-minute token budget, so several of them hitting that worst case
 at once (as happened with the thin-coverage case above) is a real scenario, not a hypothetical
 one. 300s was observed too tight for it in practice.
+
+**Rate-limit wait parsing had a real bug, and long waits shouldn't be slept through anyway**
+(`master_graph.py`'s `_RETRY_AFTER_RE`/`_rate_limit_wait_seconds`/`describe_exception`): Groq's
+wait-time format differs by which quota was hit — per-minute limits say e.g. `"try again in
+18.5475s"`, but the *daily* (TPD) quota says e.g. `"try again in 16m32.304s"`. The original regex
+only captured a bare seconds group, so it silently failed to match the minutes-containing format
+at all and fell back to a far-too-short guess (`5.0 * attempt`) — meaning a run that hit the daily
+cap kept retrying every few seconds instead of actually waiting the ~16 minutes Groq asked for,
+burning through `max_attempts` uselessly. Fixed the regex to capture an optional minutes group.
+Separately, even with correct parsing, sleeping through a many-minutes wait inside a live request
+is pointless — `_MAX_RATE_LIMIT_SLEEP_SECONDS` (60s) caps how long `_ainvoke_with_retry` will
+actually sleep for; past that it fails fast instead. `describe_exception(exc)` turns whatever
+killed a company (rate limit, transient connection error, or anything else) into a short,
+user-facing message — including Groq's *actual* reported wait time for rate limits specifically,
+since "no report was produced (insufficient data or an error)" doesn't tell a reviewer whether to
+retry in 20 seconds or 20 minutes. Surfaced end-to-end via `MasterComparisonState.company_errors`
+→ `RunResponse.company_errors` / `RetryResponse.error` → the review page's per-company warning.

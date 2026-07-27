@@ -305,7 +305,8 @@ elif st.session_state.phase == "review":
                 with st.popover("Agent trace"):
                     render_route_history(result["company_route_histories"].get(company, []))
             else:
-                st.warning("No report was produced for this company (insufficient data or an error).")
+                error_msg = result.get("company_errors", {}).get(company)
+                st.warning(error_msg or "No report was produced for this company (insufficient data or an error).")
 
             if st.button(f"🔄 Try again for {company}", key=f"retry_{company}"):
                 data, error = call_api_with_progress(
@@ -322,10 +323,14 @@ elif st.session_state.phase == "review":
                     # existing map_result - siblings are untouched.
                     result["company_statuses"][company] = data["status"]
                     result["company_route_histories"][company] = data["route_history"]
+                    result.setdefault("company_errors", {})
                     if data["report"]:
                         result["company_reports"][company] = data["report"]
+                        result["company_errors"].pop(company, None)
                     else:
                         result["company_reports"].pop(company, None)
+                        if data.get("error"):
+                            result["company_errors"][company] = data["error"]
                     st.session_state.map_result = result
                     st.rerun()
 

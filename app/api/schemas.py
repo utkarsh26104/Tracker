@@ -28,6 +28,7 @@ class RetryResponse(BaseModel):
     status: CompanyJobStatus
     report: str | None
     route_history: list[str]
+    error: str | None = None  # user-facing failure reason if status is FAILED (see describe_exception)
 
 
 class RunResponse(BaseModel):
@@ -35,6 +36,7 @@ class RunResponse(BaseModel):
     company_statuses: dict[str, CompanyJobStatus]
     company_reports: dict[str, str]
     company_route_histories: dict[str, list[str]]
+    company_errors: dict[str, str] = {}  # user-facing failure reason, keyed by company
     comparison_matrix: str | None
 
 
