@@ -43,6 +43,16 @@ async def pool_context():
         min_size=1,
         max_size=10,
         open=False,
+        # Neon's free tier auto-suspends its compute after a period of
+        # inactivity and silently drops idle connections - without this, a
+        # dead connection can still look fine to the pool and get handed
+        # out anyway, only failing (or hanging on the underlying dead TCP
+        # socket, observed taking minutes) once a real query is issued on
+        # it. check_connection does a real round-trip before handing a
+        # connection out, so a dead one gets caught and replaced here
+        # instead of surfacing as a mysterious hang deep in a checkpoint
+        # write.
+        check=AsyncConnectionPool.check_connection,
     )
     await pool.open(wait=True)
     try:

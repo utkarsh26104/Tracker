@@ -15,13 +15,16 @@ COMPANIES = ["Stripe", "Adyen", "Acme Corp"]
 PER_CALL_DELAY = 0.3
 
 
-def _delayed_supervisor_llm():
+def _delayed_supervisor_llm(call_windows: list):
     llm = make_content_driven_supervisor_llm()
     original_side_effect = llm.with_structured_output.return_value.ainvoke.side_effect
 
     async def _delayed(messages):
+        start = time.monotonic()
         await asyncio.sleep(PER_CALL_DELAY)
-        return await original_side_effect(messages)
+        result = await original_side_effect(messages)
+        call_windows.append((start, time.monotonic()))
+        return result
 
     llm.with_structured_output.return_value.ainvoke.side_effect = _delayed
     return llm
@@ -29,23 +32,33 @@ def _delayed_supervisor_llm():
 
 @pytest.mark.asyncio
 async def test_companies_run_concurrently_not_sequentially(pg_pool, fake_scout_finding):
+    # Records a (start, end) window per Supervisor call across all
+    # companies, used below to prove real concurrency directly instead of
+    # via an aggregate wall-clock threshold - a threshold against real
+    # Neon network I/O kept drifting (worsened further by the connection
+    # pool's per-checkout health check added in checkpointer.py, itself a
+    # real extra round-trip, not just occasional jitter) and was
+    # fundamentally the wrong tool: how *long* the run took depends on
+    # variable network conditions neither this test nor the code controls,
+    # but whether two companies' calls genuinely overlapped in time does not.
+    call_windows: list[tuple[float, float]] = []
+
     with (
-        patch("app.graph.supervisor.get_supervisor_llm", return_value=_delayed_supervisor_llm()),
+        patch("app.graph.supervisor.get_supervisor_llm", return_value=_delayed_supervisor_llm(call_windows)),
         patch("app.graph.writer.get_writer_llm", return_value=make_scripted_writer_llm()),
         patch("app.graph.scout.search_company", return_value=[fake_scout_finding]),
     ):
-        start = time.monotonic()
         result = await run_map_phase(job_id="test-map-reduce", companies=COMPANIES, pool=pg_pool)
-        elapsed = time.monotonic() - start
 
-    # Fully sequential would be ~3 companies * (3 supervisor calls * delay +
-    # real Postgres checkpoint round-trips) - empirically ~10.5s+ (see
-    # app/db/checkpointer.py's docstring for the measured before/after numbers).
-    # Concurrent execution isn't instant (real network I/O still applies, and
-    # Neon round-trip latency varies noticeably run to run), so this is a fixed
-    # ceiling comfortably under the serialized baseline rather than a tight
-    # multiple of the tiny mock delay, which was flaky under real network jitter.
-    assert elapsed < 9.0, f"took {elapsed:.2f}s - looks sequential (~10.5s serial baseline), not concurrent"
+    # A single company's own graph calls its Supervisor strictly
+    # sequentially, so any overlap can only come from two *different*
+    # companies running at once - direct proof of concurrency.
+    overlap_found = any(
+        a_start < b_end and b_start < a_end
+        for i, (a_start, a_end) in enumerate(call_windows)
+        for b_start, b_end in call_windows[i + 1 :]
+    )
+    assert overlap_found, f"no overlapping Supervisor calls found across {len(call_windows)} calls - looks sequential"
     assert all(status == CompanyJobStatus.AWAITING_APPROVAL for status in result.company_statuses.values())
     assert set(result.company_reports.keys()) == set(COMPANIES)
 

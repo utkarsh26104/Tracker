@@ -5,11 +5,22 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from psycopg_pool import AsyncConnectionPool
 
 from app.db.checkpointer import make_checkpointer
 from app.graph.build_graph import build_graph
 from app.graph.state import RouteDecision, new_agent_state
 from tests.conftest import make_content_driven_supervisor_llm, make_scripted_writer_llm
+
+
+def test_pool_has_a_connection_health_check_configured(pg_pool):
+    """Regression guard for a real hang observed in production use: Neon's
+    free tier silently drops idle connections after its compute
+    auto-suspends, and without an active liveness check, the pool can hand
+    out a dead connection that then hangs (rather than failing fast) the
+    first time something tries to actually use it - surfacing as a
+    many-minutes-long, mysterious request timeout with no clear cause."""
+    assert pg_pool._check is AsyncConnectionPool.check_connection
 
 
 @pytest.mark.asyncio
