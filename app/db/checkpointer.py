@@ -1,4 +1,6 @@
+import time
 from contextlib import asynccontextmanager
+from weakref import WeakKeyDictionary
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -14,6 +16,30 @@ _ALLOWED_MSGPACK_MODULES = [
     ("app.graph.state", "ScoutFinding"),
     ("app.graph.state", "HistoricalMatch"),
 ]
+
+
+_CONNECTION_CHECK_INTERVAL_SECONDS = 30.0
+_last_checked: "WeakKeyDictionary" = WeakKeyDictionary()
+
+
+async def _check_connection_if_stale(conn) -> None:
+    """psycopg_pool's plain AsyncConnectionPool.check_connection runs
+    unconditionally on *every* checkout, not just occasionally - a real
+    network round-trip to Neon each time, which is meaningful cost during a
+    single company's research loop (many checkpoint writes checking out a
+    connection in quick succession). Neon's free tier drops connections
+    specifically for sitting *idle*, not from being reused quickly and
+    repeatedly, so skip the round-trip if this exact connection object was
+    already confirmed alive recently - only a connection that's gone
+    unused for a while (the actual staleness risk) pays the check. Keyed
+    by weak reference so entries for closed/replaced connections don't
+    leak."""
+    now = time.monotonic()
+    last = _last_checked.get(conn)
+    if last is not None and now - last < _CONNECTION_CHECK_INTERVAL_SECONDS:
+        return
+    await AsyncConnectionPool.check_connection(conn)
+    _last_checked[conn] = now
 
 
 def make_checkpointer(pool: AsyncConnectionPool) -> AsyncPostgresSaver:
@@ -48,11 +74,9 @@ async def pool_context():
         # dead connection can still look fine to the pool and get handed
         # out anyway, only failing (or hanging on the underlying dead TCP
         # socket, observed taking minutes) once a real query is issued on
-        # it. check_connection does a real round-trip before handing a
-        # connection out, so a dead one gets caught and replaced here
-        # instead of surfacing as a mysterious hang deep in a checkpoint
-        # write.
-        check=AsyncConnectionPool.check_connection,
+        # it. See _check_connection_if_stale's docstring for why this isn't
+        # just the raw AsyncConnectionPool.check_connection.
+        check=_check_connection_if_stale,
     )
     await pool.open(wait=True)
     try:

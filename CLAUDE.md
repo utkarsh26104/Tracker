@@ -86,8 +86,8 @@ operations *per instance*, so a shared instance silently serializes "concurrent"
 runs regardless of pool size (measured ~10.6s → 4.6s for 3 companies after fixing this). Always
 call `make_checkpointer(pool)` fresh per graph run — see that function's docstring.
 
-**Pool connection health checks** (`app/db/checkpointer.py`'s `pool_context`): the
-`AsyncConnectionPool` is built with `check=AsyncConnectionPool.check_connection`, not left at
+**Pool connection health checks** (`app/db/checkpointer.py`'s `pool_context`,
+`_check_connection_if_stale`): the `AsyncConnectionPool` is built with `check=`, not left at
 psycopg_pool's default of no check at all. Observed in real use — Neon's free tier auto-suspends
 its compute after a period of inactivity and silently drops idle connections from its side; a
 pool with no health check doesn't know this and hands the dead connection out anyway (`error
@@ -95,10 +95,22 @@ ignored terminating <psycopg.AsyncPipeline [BAD]>: the connection is lost` in th
 then doesn't fail fast — it hangs on the dead TCP socket until some far-off OS-level timeout,
 observed taking several minutes inside what looked like an otherwise-normal request. That hang is
 indistinguishable from a slow LLM call from the UI's side, so it silently eats into (and can
-exceed) `call_api_with_progress`'s 600s timeout with no diagnostic trail explaining why. Adding
-the health check makes the pool verify a connection with a real round-trip before handing it out,
-so a dead one gets caught and replaced immediately instead of surfacing as a mystery hang deep
-inside a checkpoint write.
+exceed) `call_api_with_progress`'s 600s timeout with no diagnostic trail explaining why. A real
+round-trip before handing a connection out catches a dead one and replaces it immediately instead
+of surfacing as a mystery hang deep inside a checkpoint write.
+
+That round-trip has a real cost, though — psycopg_pool's plain `AsyncConnectionPool.check_connection`
+runs unconditionally on *every* checkout, not just occasionally, and was measured at ~466ms/checkout
+against Neon (20 checkouts: 9.3s checked vs. 0.001s cached — see `_check_connection_if_stale`'s
+docstring). A single company's research loop checks out a connection per checkpoint write, so
+that's not a one-time cost, it's paid repeatedly throughout every run — a second real bug (users
+noticing reports got slower) hiding right behind the fix for the first one (the hang). Since
+Neon drops connections for sitting *idle*, not from being reused quickly and repeatedly,
+`_check_connection_if_stale` skips the round-trip if a connection was already confirmed alive
+within the last `_CONNECTION_CHECK_INTERVAL_SECONDS` (30s) — the common case during a busy loop -
+and only pays the real check for a connection that's actually gone unused for a while, which is
+the only case where the staleness risk is real. Keyed by `weakref.WeakKeyDictionary` so entries
+for closed/replaced connections don't leak.
 
 **Retry/resilience** (`app/graph/master_graph.py`): `_ainvoke_with_retry()` wraps the whole
 `graph.ainvoke()` call (not per-node) for transient connection errors — `psycopg.OperationalError`
