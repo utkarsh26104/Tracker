@@ -29,3 +29,10 @@ services:
         value: yiyanghkust/finbert-tone
       - key: FINBERT_SENTIMENT_MODEL
         value: ProsusAI/finbert
+      # Optional - leave blank in the Render dashboard to keep Langfuse
+      # inactive (app/observability.py falls back to logging-only). LANGFUSE_HOST
+      # isn't listed since app/config.py's default already matches Langfuse Cloud.
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
