@@ -19,17 +19,27 @@ COPY scripts ./scripts
 RUN pip install --no-cache-dir -e .
 
 # Bake both FinBERT models into the image (see app/config.py's defaults) so
-# a Cloud Run cold start never hits huggingface.co or pays billed request
-# time downloading ~400MB of weights - app/memory/embeddings.py and
+# a cold start never hits huggingface.co or pays billed request time
+# downloading ~400MB of weights - app/memory/embeddings.py and
 # app/memory/sentiment.py load these same two models by name at runtime, so
-# this populates a real cache hit, not a partial one.
+# this populates a real cache hit, not a partial one. HF_HOME is pinned to
+# an explicit path (not the default ~/.cache/huggingface) because this bake
+# runs as root but the app runs as appuser below - two different users'
+# home directories would otherwise resolve to two different cache paths,
+# silently defeating the whole point of baking the models in.
+ENV HF_HOME=/app/.cache/huggingface
 RUN python -c "\
 from transformers import AutoTokenizer, AutoModel, pipeline; \
 AutoTokenizer.from_pretrained('yiyanghkust/finbert-tone'); \
 AutoModel.from_pretrained('yiyanghkust/finbert-tone'); \
 pipeline('sentiment-analysis', model='ProsusAI/finbert')"
 
-RUN useradd --create-home --uid 1000 appuser
+# chown, not just useradd - everything under /app up to this point (app
+# code, the HF cache above, and the not-yet-created ./data/chroma that
+# ChromaDB creates on first use) is owned by root. Without this, ChromaDB's
+# Rust bindings fail hard at startup with "Permission denied (os error 13)"
+# the moment they try to create their persistence directory as appuser.
+RUN useradd --create-home --uid 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 ENV APP_ENV=production
