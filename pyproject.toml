@@ -38,6 +38,20 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
+[tool.poetry]
+# Streamlit Community Cloud resolves/installs dependencies via Poetry, not
+# pip - and Poetry's default "package mode" assumes there's a directory
+# literally named after the project ("tracker/") to install as the current
+# project's own package, unrelated to and unaware of the
+# [tool.setuptools.packages.find] config below (that's setuptools-only,
+# Poetry doesn't read it). Our real code lives in app/, not tracker/, so
+# Poetry fails with "No file/folder found for package tracker" otherwise.
+# ui/streamlit_app.py is a pure REST client to the API and never imports
+# from app/, so there's nothing to install here anyway - this only affects
+# Poetry (Streamlit Cloud); pip-based installs (Docker, CI, local dev) don't
+# read [tool.poetry] at all and are unaffected.
+package-mode = false
+
 [tool.setuptools.packages.find]
 # Only app/ is an installable package - ui/streamlit_app.py and scripts/*.py
 # are run directly (not imported via package namespace), and data/ is
