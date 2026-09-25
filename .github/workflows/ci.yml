@@ -94,10 +94,15 @@ jobs:
           service: tracker-api
           region: ${{ vars.GCP_REGION }}
           image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # --update-env-vars (not --set-env-vars, which replaces the whole
+          # env var set) - GROQ_API_KEY/TAVILY_API_KEY/DATABASE_URL/API_KEY
+          # are set once directly on the Cloud Run service (see README), not
+          # here, so a plain --set-env-vars on every CI deploy would wipe
+          # them out on the very next push to master.
           flags: >-
             --timeout=3600
             --memory=2Gi
             --cpu=2
             --min-instances=0
             --allow-unauthenticated
-            --set-env-vars=APP_ENV=production
+            --update-env-vars=APP_ENV=production
