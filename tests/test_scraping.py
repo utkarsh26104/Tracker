@@ -2,7 +2,12 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 
-from app.services.scraping import fetch_company_site_findings, fetch_url_as_finding, search_marketplace_reviews
+from app.services.scraping import (
+    fetch_company_site_findings,
+    fetch_url_as_finding,
+    search_marketplace_reviews,
+    search_social_media_presence,
+)
 
 
 def _fake_response(html: str, status_code: int = 200) -> MagicMock:
@@ -151,4 +156,29 @@ def test_search_marketplace_reviews_restricts_to_marketplace_domains():
 
     _, kwargs = fake_client.search.call_args
     assert kwargs["include_domains"] == ["amazon.in", "amazon.com", "flipkart.com"]
+    assert "LocalBrand" in kwargs["query"]
+
+
+def test_search_social_media_presence_restricts_to_social_domains():
+    fake_client = MagicMock()
+    fake_client.search.return_value = {
+        "results": [
+            {
+                "url": "https://www.instagram.com/p/xyz",
+                "title": "LocalBrand on Instagram",
+                "content": "New Winter Collection drop - 20% off this week only!",
+                "published_date": None,
+            }
+        ]
+    }
+
+    with patch("app.services.scraping._get_client", return_value=fake_client):
+        findings = search_social_media_presence("LocalBrand")
+
+    assert len(findings) == 1
+    assert findings[0].source_url == "https://www.instagram.com/p/xyz"
+    assert "20% off" in findings[0].snippet
+
+    _, kwargs = fake_client.search.call_args
+    assert kwargs["include_domains"] == ["instagram.com", "facebook.com"]
     assert "LocalBrand" in kwargs["query"]

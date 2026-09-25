@@ -84,6 +84,24 @@ def search_marketplace_reviews(company: str) -> list[ScoutFinding]:
     return _findings_from_tavily_response(response)
 
 
+_SOCIAL_MEDIA_DOMAINS = ["instagram.com", "facebook.com"]
+
+
+def search_social_media_presence(company: str) -> list[ScoutFinding]:
+    """Instagram/Facebook activity, via the same Tavily domain-restriction
+    approach as search_marketplace_reviews. For a small D2C brand, Instagram
+    is often the *primary* channel - more current than the brand's own site
+    and not something Amazon/Flipkart coverage substitutes for (a brand can
+    easily have one without the other). Query targets recent brand activity
+    (launches, discounts, posts) rather than reviews, since that's what
+    actually shows up on a brand's own social presence."""
+    query = f"{company} latest posts launches discounts"
+    response = _get_client().search(
+        query=query, max_results=5, search_depth="basic", topic="general", include_domains=_SOCIAL_MEDIA_DOMAINS
+    )
+    return _findings_from_tavily_response(response)
+
+
 _FETCH_MAX_CHARS = 2000
 _FETCH_TIMEOUT_SECONDS = 10.0
 _USER_AGENT = {"User-Agent": "Mozilla/5.0 (compatible; TrackerBot/1.0)"}

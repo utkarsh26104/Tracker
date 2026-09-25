@@ -164,17 +164,24 @@ RECENCY_OPTIONS = {
 }
 
 if st.session_state.phase == "input":
-    client_company = st.text_input(
+    client_company_raw = st.text_input(
         "Your client's company name (optional)",
         value=st.session_state.client_company,
-        placeholder="e.g. Acme Retail",
+        placeholder="e.g. Acme Retail, or Acme Retail | https://acmeretail.com",
         help="If set, the final report becomes a Strategic Recommendation for this company - "
         "comparing it against the others and recommending moves in response to their activity - "
         "instead of a neutral comparison. This company is researched too even if you don't also "
-        "list it below.",
+        "list it below. If the client has little web coverage (small, local, or private "
+        "business), add its website after a `|` the same way you would for a competitor below - "
+        "it gets the same site crawl + Amazon/Flipkart/Instagram treatment.",
     )
+    if "|" in client_company_raw:
+        client_name, client_url = (part.strip() for part in client_company_raw.split("|", 1))
+        client_url = client_url or None
+    else:
+        client_name, client_url = client_company_raw.strip(), None
 
-    if client_company.strip():
+    if client_name:
         with st.expander("📎 Upload a client dossier (optional)", expanded=False):
             st.caption(
                 "Already have a profile on this client? Upload it (PDF/.txt/.md) and future runs "
@@ -189,7 +196,7 @@ if st.session_state.phase == "input":
                 try:
                     resp = httpx.post(
                         f"{API_BASE_URL}/tracker/upload-client-file",
-                        data={"company": client_company.strip()},
+                        data={"company": client_name},
                         files={"file": (dossier_file.name, dossier_file.getvalue())},
                         headers=API_HEADERS,
                         timeout=60.0,
@@ -211,10 +218,11 @@ if st.session_state.phase == "input":
         help="One per line. If a competitor has little web coverage (e.g. a small, local, or "
         "private business), add its own website after a `|` to seed the research directly from "
         "it - e.g. `LocalBrand | https://localbrand.com`. This also crawls that site for "
-        "product/launch and discount pages, and searches Amazon/Flipkart for the company's own "
-        "listings and customer reviews - so sentiment analysis has something real to work with "
-        "even when the company's site is JS-rendered or has no reviews of its own. Otherwise a "
-        "thin-coverage company can burn through several fruitless search loops before giving up.",
+        "product/launch and discount pages, and searches Amazon/Flipkart/Instagram/Facebook for "
+        "the company's own listings, posts, and customer reviews - so sentiment analysis has "
+        "something real to work with even when the company's site is JS-rendered or has no "
+        "reviews of its own. Otherwise a thin-coverage company can burn through several fruitless "
+        "search loops before giving up.",
     )
     recency_label = st.selectbox(
         "How far back should Scout search?",
@@ -242,10 +250,13 @@ if st.session_state.phase == "input":
                 else:
                     companies.append(line)
 
-            if not companies and not client_company.strip():
+            if client_name and client_url:
+                company_urls[client_name] = client_url
+
+            if not companies and not client_name:
                 st.error("Enter at least one company.")
             else:
-                st.session_state.client_company = client_company.strip()
+                st.session_state.client_company = client_name
                 data, error = call_api_with_progress(
                     "POST",
                     f"{API_BASE_URL}/tracker/run",

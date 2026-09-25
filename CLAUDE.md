@@ -216,21 +216,29 @@ is trusted to pull a mentioned rating out of messy page text directly rather tha
 trying to do it upstream. All fetched findings seed `scouted_data` *before* the graph runs, with
 `route_history` recording `"Seeded with N page(s) from provided URL: ..."` as the first entry. A
 failed fetch (bad URL, network error, empty homepage) returns `[]`/`None` and is logged, not
-raised — Scout still runs normally either way, this is purely additive. Scoped to competitors
-only (via the textarea); the client already has the richer dossier-upload path above, which fully
-replaces the need for this on the client specifically.
+raised — Scout still runs normally either way, this is purely additive. The named `client_company`
+gets the same treatment as any competitor, not just its own dossier-upload path — `run_map_phase`'s
+per-company dispatch calls `run_company(..., seed_url=company_urls.get(company))` generically for
+whichever company falls through the client's cache/dossier shortcuts, so the client only needed a
+UI-level fix (the client-name field accepts the same `Name | https://url` syntax as the Competitors
+textarea) to reach parity — no backend special-casing required.
 
-**Amazon/Flipkart marketplace search** (`app/services/scraping.py`'s `search_marketplace_reviews`,
-called alongside `fetch_company_site_findings` whenever a seed URL is given — see `run_company`):
-found in real use that a company's own site is often JS-rendered (a plain `httpx` fetch sees an
-empty shell, no real product/review content at all), and a company's own site rarely has honest
-customer sentiment anyway. Rather than writing a direct Amazon/Flipkart scraper — both are
-aggressively bot-hostile (CAPTCHAs, rate limiting) and would likely just get blocked — this reuses
-the *existing* Tavily integration with `include_domains=["amazon.in", "amazon.com",
-"flipkart.com"]`, which restricts results server-side to pages Tavily's own crawler already
-indexed. Runs concurrently with the site crawl (`asyncio.gather`) since both are independent
-`asyncio.to_thread` calls. Only triggered when a seed URL is provided — same opt-in signal as the
-site crawl, not a blanket extra Tavily call on every company.
+**Amazon/Flipkart/Instagram/Facebook search** (`app/services/scraping.py`'s
+`search_marketplace_reviews`/`search_social_media_presence`, called alongside
+`fetch_company_site_findings` whenever a seed URL is given — see `run_company`): found in real use
+that a company's own site is often JS-rendered (a plain `httpx` fetch sees an empty shell, no real
+product/review content at all), and a company's own site rarely has honest customer sentiment
+anyway. Rather than writing direct scrapers for these — all four are aggressively bot-hostile
+(CAPTCHAs, rate limiting) and would likely just get blocked — this reuses the *existing* Tavily
+integration with `include_domains` restricted per source (`_MARKETPLACE_DOMAINS = ["amazon.in",
+"amazon.com", "flipkart.com"]`, `_SOCIAL_MEDIA_DOMAINS = ["instagram.com", "facebook.com"]`),
+which restricts results server-side to pages Tavily's own crawler already indexed. All three
+sources (site crawl, marketplace, social) run concurrently (`asyncio.gather`) since each is an
+independent `asyncio.to_thread` call. Instagram/Facebook specifically matter for a small D2C
+brand, where social media is often the *primary* channel — more current than the brand's own site,
+and not something Amazon/Flipkart coverage substitutes for (a brand can easily have one without
+the other). Only triggered when a seed URL is provided — same opt-in signal as the site crawl, not
+a blanket extra Tavily call on every company.
 
 **Forced report on the final loop for a seeded company** (`app/graph/state.py`'s
 `AgentState.seeded_from_url`, `writer.py`'s `FORCED_FINAL_ATTEMPT_INSTRUCTION`/`force_report`):

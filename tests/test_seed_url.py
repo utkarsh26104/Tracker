@@ -55,6 +55,7 @@ async def test_seed_url_populates_scouted_data_before_scout_runs(pg_pool):
         patch("app.graph.scout.search_company", return_value=[]),
         patch("app.graph.master_graph.fetch_company_site_findings", return_value=seed_findings) as fetch_mock,
         patch("app.graph.master_graph.search_marketplace_reviews", return_value=[]) as marketplace_mock,
+        patch("app.graph.master_graph.search_social_media_presence", return_value=[]) as social_mock,
     ):
         result = await run_map_phase(
             job_id=job_id,
@@ -65,6 +66,7 @@ async def test_seed_url_populates_scouted_data_before_scout_runs(pg_pool):
 
     fetch_mock.assert_called_once_with("https://localbrand.example")
     marketplace_mock.assert_called_once_with(company)
+    social_mock.assert_called_once_with(company)
     assert result.company_statuses[company].value == "awaiting_approval"
     assert result.company_route_histories[company][0] == (
         "Seeded with 2 page(s) from provided URL: https://localbrand.example"
@@ -91,6 +93,14 @@ async def test_marketplace_findings_are_included_and_noted_in_route_history(pg_p
             fetched_at=datetime.now(timezone.utc),
         ),
     ]
+    social_findings = [
+        ScoutFinding(
+            source_url="https://www.instagram.com/p/xyz",
+            title="LocalBrand on Instagram",
+            snippet="New Winter Collection drop - 20% off this week only!",
+            fetched_at=datetime.now(timezone.utc),
+        ),
+    ]
 
     with (
         patch("app.graph.supervisor.get_supervisor_llm", return_value=make_content_driven_supervisor_llm()),
@@ -98,6 +108,7 @@ async def test_marketplace_findings_are_included_and_noted_in_route_history(pg_p
         patch("app.graph.scout.search_company", return_value=[]),
         patch("app.graph.master_graph.fetch_company_site_findings", return_value=site_findings),
         patch("app.graph.master_graph.search_marketplace_reviews", return_value=marketplace_findings),
+        patch("app.graph.master_graph.search_social_media_presence", return_value=social_findings),
     ):
         result = await run_map_phase(
             job_id=job_id,
@@ -108,7 +119,7 @@ async def test_marketplace_findings_are_included_and_noted_in_route_history(pg_p
 
     assert result.company_route_histories[company][0] == (
         "Seeded with 1 page(s) from provided URL: https://localbrand.example "
-        "and 1 marketplace listing(s)/review(s)"
+        "and 1 marketplace listing(s)/review(s) and 1 social media post(s)"
     )
 
 
@@ -123,6 +134,7 @@ async def test_failed_seed_url_fetch_does_not_break_the_run(pg_pool, fake_scout_
         patch("app.graph.scout.search_company", return_value=[fake_scout_finding]),
         patch("app.graph.master_graph.fetch_company_site_findings", return_value=[]),
         patch("app.graph.master_graph.search_marketplace_reviews", return_value=[]),
+        patch("app.graph.master_graph.search_social_media_presence", return_value=[]),
     ):
         result = await run_map_phase(
             job_id=job_id,
@@ -147,11 +159,13 @@ async def test_no_seed_url_skips_the_fetch_entirely(pg_pool, fake_scout_finding)
         patch("app.graph.scout.search_company", return_value=[fake_scout_finding]),
         patch("app.graph.master_graph.fetch_company_site_findings") as fetch_mock,
         patch("app.graph.master_graph.search_marketplace_reviews") as marketplace_mock,
+        patch("app.graph.master_graph.search_social_media_presence") as social_mock,
     ):
         await run_map_phase(job_id=job_id, companies=[company], pool=pg_pool)
 
     fetch_mock.assert_not_called()
     marketplace_mock.assert_not_called()
+    social_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -183,6 +197,7 @@ async def test_seeded_company_still_produces_a_report_when_loop_cap_is_hit(pg_po
         patch("app.graph.scout.search_company", return_value=[]),  # Tavily finds nothing, every loop
         patch("app.graph.master_graph.fetch_company_site_findings", return_value=site_findings),
         patch("app.graph.master_graph.search_marketplace_reviews", return_value=[]),
+        patch("app.graph.master_graph.search_social_media_presence", return_value=[]),
     ):
         result = await run_map_phase(
             job_id=job_id,
@@ -193,3 +208,47 @@ async def test_seeded_company_still_produces_a_report_when_loop_cap_is_hit(pg_po
 
     assert result.company_statuses[company].value == "awaiting_approval"
     assert result.company_reports[company] == "# LocalBrand\nThin but real data from its own site."
+
+
+@pytest.mark.asyncio
+async def test_client_company_gets_the_same_seed_url_treatment_as_a_competitor(pg_pool):
+    """The client field accepts the same `Name | https://url` syntax the
+    Competitors textarea does (ui/streamlit_app.py) - confirms the backend
+    side of that: run_map_phase's _run() only special-cases client_company
+    for the report-cache/dossier shortcuts, and falls through to the exact
+    same run_company(..., seed_url=...) call used for any competitor once
+    neither shortcut applies (fresh company name here, so neither does)."""
+    job_id = f"seed-url-test-{uuid.uuid4()}"
+    company = f"ClientBrand-{uuid.uuid4()}"
+    site_findings = [
+        ScoutFinding(
+            source_url="https://clientbrand.example",
+            title="ClientBrand - Home",
+            snippet="ClientBrand sells artisanal soap across India.",
+            fetched_at=datetime.now(timezone.utc),
+        )
+    ]
+
+    with (
+        patch("app.graph.supervisor.get_supervisor_llm", return_value=make_content_driven_supervisor_llm()),
+        patch("app.graph.writer.get_writer_llm", return_value=make_scripted_writer_llm()),
+        patch("app.graph.scout.search_company", return_value=[]),
+        patch("app.graph.master_graph.fetch_company_site_findings", return_value=site_findings) as fetch_mock,
+        patch("app.graph.master_graph.search_marketplace_reviews", return_value=[]) as marketplace_mock,
+        patch("app.graph.master_graph.search_social_media_presence", return_value=[]) as social_mock,
+    ):
+        result = await run_map_phase(
+            job_id=job_id,
+            companies=[company],
+            pool=pg_pool,
+            client_company=company,
+            company_urls={company: "https://clientbrand.example"},
+        )
+
+    fetch_mock.assert_called_once_with("https://clientbrand.example")
+    marketplace_mock.assert_called_once_with(company)
+    social_mock.assert_called_once_with(company)
+    assert result.company_statuses[company].value == "awaiting_approval"
+    assert result.company_route_histories[company][0] == (
+        "Seeded with 1 page(s) from provided URL: https://clientbrand.example"
+    )

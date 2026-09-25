@@ -102,16 +102,20 @@ never goes to waste.
 
 ### Small/local businesses with thin web coverage
 
-Generic web search can turn up little or nothing for a smaller, local, or private competitor,
-which drives the Supervisor through repeated fruitless search loops before giving up. If you
-already know the company's own website, add it directly on a Competitors line as
-`Name | https://example.com` - that gets fetched and seeded as findings before the graph even
-starts, along with a light crawl of that same site for product/launch, discount, and review pages.
-It also searches Amazon and Flipkart specifically for that company's listings and customer
-reviews - useful since a company's own site is often JS-rendered (a plain fetch sees an empty
-shell, no real content) and rarely hosts honest reviews anyway. Between the three sources, there's
-almost always something concrete to write from and real customer sentiment to analyze, even when
-Tavily's general search comes up empty.
+Generic web search can turn up little or nothing for a smaller, local, or private company - and
+for a consultancy whose clients and competitors are mostly small/local D2C brands, that's the
+normal case, not an edge case. It drives the Supervisor through repeated fruitless search loops
+before giving up. If you already know the company's own website, add it directly as
+`Name | https://example.com` - on a Competitors line, or on the Client company field itself, both
+accept the same syntax. That URL gets fetched and seeded as findings before the graph even starts,
+along with a light crawl of that same site for product/launch, discount, and review pages. It also
+searches Amazon and Flipkart specifically for that company's listings and customer reviews, and
+Instagram and Facebook for its recent posts, launches, and discounts - useful since a company's own
+site is often JS-rendered (a plain fetch sees an empty shell, no real content), rarely hosts honest
+reviews itself, and for a small D2C brand, Instagram is often the *primary* channel rather than a
+supplement to the site. Between the four sources, there's almost always something concrete to
+write from and real customer sentiment to analyze, even when Tavily's general search comes up
+empty.
 
 A seeded company also won't be abandoned just because the Writer isn't fully satisfied - if it
 still hasn't produced a report by the time the search-loop budget runs out, the final attempt is
