@@ -73,36 +73,15 @@ jobs:
     needs: build-and-push
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write # required for GCP Workload Identity Federation (OIDC)
     steps:
-      # One-time setup required in your own GCP project before this job can
-      # succeed - see README.md's "API -> GCP Cloud Run (Docker)" section:
-      # a Workload Identity Pool + OIDC provider trusting this repo, and a
-      # deploy service account with Cloud Run Admin + Service Account User,
-      # referenced below via GCP_WORKLOAD_IDENTITY_PROVIDER/
-      # GCP_DEPLOY_SERVICE_ACCOUNT/GCP_REGION repo variables. This step
-      # cannot succeed until that setup exists - it was not run/verified as
-      # part of building this pipeline.
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: tracker-api
-          region: ${{ vars.GCP_REGION }}
-          image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          # --update-env-vars (not --set-env-vars, which replaces the whole
-          # env var set) - GROQ_API_KEY/TAVILY_API_KEY/DATABASE_URL/API_KEY
-          # are set once directly on the Cloud Run service (see README), not
-          # here, so a plain --set-env-vars on every CI deploy would wipe
-          # them out on the very next push to master.
-          flags: >-
-            --timeout=3600
-            --memory=2Gi
-            --cpu=2
-            --min-instances=0
-            --allow-unauthenticated
-            --update-env-vars=APP_ENV=production
+      # Render builds tracker-api from the repo's own Dockerfile (render.yaml
+      # sets runtime: docker) rather than pulling the image this workflow
+      # just pushed to GHCR - build-and-push above stays purely as a CI
+      # check that the Dockerfile builds, and as a pullable artifact.
+      # render.yaml sets autoDeploy: false specifically so a deploy only
+      # fires here, after the test job has passed, instead of on every raw
+      # push the way Render's default git-integration behaves. One-time
+      # setup: Render dashboard -> tracker-api -> Settings -> Deploy Hook ->
+      # copy the URL -> add it as the RENDER_DEPLOY_HOOK_URL repo secret.
+      - name: Trigger Render deploy
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"

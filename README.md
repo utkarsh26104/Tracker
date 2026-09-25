@@ -149,23 +149,28 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-85 tests: fast mocked unit/wiring tests (no credentials needed) plus real-Postgres integration
+21 tests: fast mocked unit/wiring tests (no credentials needed) plus real-Postgres integration
 tests (checkpoint crash/resume, Map-Reduce concurrency, the HITL gate) that automatically skip
-if `DATABASE_URL` isn't reachable, so the suite still runs without secrets configured. CI
-(`.github/workflows/ci.yml`) runs the full suite against a real ephemeral Postgres service
-container on every push/PR, so the integration tests actually execute there rather than skipping.
+if `DATABASE_URL` isn't reachable, so the suite still runs without secrets configured.
 
 ## Deployment (free tier)
 
 **API → Render:**
 1. Push this repo to GitHub, then in Render: New → Blueprint → point at the repo (uses
-   `render.yaml`).
+   `render.yaml`). `runtime: docker` means Render builds and runs the same `Dockerfile` CI does,
+   not a separate buildpack.
 2. Set the `sync: false` env vars in the Render dashboard: `GROQ_API_KEY`, `TAVILY_API_KEY`,
    `DATABASE_URL` (your Neon connection string). `API_KEY` doesn't need to be set manually -
    `render.yaml` has it as `generateValue: true`, so Render generates a random one on first
    deploy. Copy it from the Render dashboard's Environment tab afterward (you'll need it for the
    Streamlit UI step below).
-3. Deploy. First request after idle will cold-start (~30-60s on the free tier).
+3. `render.yaml` sets `autoDeploy: false` - Render won't redeploy on every push by itself.
+   Instead, `.github/workflows/ci.yml`'s `deploy` job triggers a deploy *after the test suite
+   passes*, via `tracker-api` → Settings → Deploy Hook in the Render dashboard: copy that URL and
+   add it as the `RENDER_DEPLOY_HOOK_URL` GitHub Actions **secret**. Until that secret is set,
+   pushes to `master` run CI but don't deploy - deploy manually from the Render dashboard in the
+   meantime, or add the secret first.
+4. First request after idle will cold-start (~30-60s on the free tier).
 
 **UI → Streamlit Community Cloud:**
 1. share.streamlit.io → New app → point at this repo, main file `ui/streamlit_app.py`.
@@ -186,35 +191,16 @@ reliable, upgrade the Render service to the $7/mo Starter tier (2GB RAM) - the f
 for showing the API is *up* and for the Supervisor/Scout/Writer path, not for a guaranteed full
 run through Brain/RAG.
 
-### API → GCP Cloud Run (Docker)
+### CI-gated deploys
 
-An additional, Dockerized deploy path alongside Render above (not a replacement - the Streamlit
-UI is unaffected either way and just points `TRACKER_API_URL` at whichever API is live).
-`.github/workflows/ci.yml` builds the `Dockerfile` and pushes it to GHCR on every push/PR to
-`master`, then deploys the pushed image to Cloud Run on pushes to `master` specifically.
-
-**One-time setup in your own GCP project** (required before the `deploy` job can succeed - it
-was built and documented here but not run/verified against a real GCP project):
-1. Enable the `run.googleapis.com` and `iamcredentials.googleapis.com` APIs.
-2. Create a Workload Identity Pool + OIDC provider trusting
-   `https://token.actions.githubusercontent.com`, attribute-restricted to this repo
-   (`assertion.repository == 'utkarsh26104/Tracker'`) so no other repo can impersonate it.
-3. Create a deploy service account with `roles/run.admin` + `roles/iam.serviceAccountUser`,
-   bound to the Workload Identity principal via `roles/iam.workloadIdentityUser`.
-4. Add three **repo variables** (Settings → Secrets and variables → Actions → Variables - these
-   aren't sensitive, so variables not secrets): `GCP_WORKLOAD_IDENTITY_PROVIDER` (the provider
-   resource name), `GCP_DEPLOY_SERVICE_ACCOUNT` (the service account email), `GCP_REGION`.
-5. Make the GHCR package public (repo → Packages → tracker → Package settings) - Cloud Run can
-   pull directly from GHCR, but only for public images; no credentials are baked into the image
-   either way, since Groq/Tavily/DB secrets are injected as env vars at deploy time.
-6. Set `GROQ_API_KEY`, `TAVILY_API_KEY`, `DATABASE_URL`, `API_KEY` (and the optional
-   `LANGFUSE_*` vars below) on the Cloud Run service itself, the same way as the Render env vars
-   above.
-
-The deploy flags (`--timeout=3600 --memory=2Gi --cpu=2`) mirror the same two constraints as
-Render above: research runs with Groq rate-limit retries can run long (Cloud Run's default
-300s timeout would 504 mid-run), and PyTorch + FinancialBERT need real RAM headroom past Cloud
-Run's 512MiB default.
+`.github/workflows/ci.yml` runs on every push/PR to `master`: `test` (full suite against a real
+ephemeral Postgres), then `build-and-push` (builds the `Dockerfile`, pushes to GHCR - a CI check
+that the image actually builds, and a pullable, versioned artifact, independent of how it's
+deployed), then `deploy` (pushes to `master` only) triggers the Render redeploy described above.
+This was originally built against GCP Cloud Run, but GCP's mandatory billing-account verification
+was a hard wall for this account with no workaround, so the deploy target moved to Render - the
+platform already running this app for free with no card on file. Nothing about `test` or
+`build-and-push` changed; only how the last step actually ships the build.
 
 ### Observability
 

@@ -294,20 +294,30 @@ by scoping discovery explicitly to `include = ["app*"]` — the only directory a
 importable as a package (`ui/streamlit_app.py` and `scripts/*.py` are run directly, never
 imported via package namespace).
 
-**CI/CD, Docker, and observability** (`.github/workflows/ci.yml`, `Dockerfile`,
-`app/observability.py`): additive to the existing Render+Streamlit-Community-Cloud deploy path,
-not a replacement — see README's "API → GCP Cloud Run (Docker)" section for the full one-time GCP
-setup a user needs to do themselves (Workload Identity Federation, no long-lived JSON key)
-before the `deploy` job in CI can actually succeed; it was built and documented but never run
-against a real GCP project, since that requires credentials this environment doesn't have.
+**CI/CD, Docker, and observability** (`.github/workflows/ci.yml`, `Dockerfile`, `render.yaml`,
+`app/observability.py`): the `deploy` job was originally built against GCP Cloud Run (Workload
+Identity Federation, no long-lived JSON key) — that path is still the more "portable" design in
+principle, but GCP's mandatory billing-account verification turned out to be a hard wall for this
+specific account (card repeatedly rejected at account level, not a fixable code/config issue), and
+every other mainstream cloud (AWS, Azure, DigitalOcean) requires the same card verification, so
+switching clouds wasn't going to help. Retargeted `deploy` at Render instead — the platform
+already running this app for free with no card on file — via `render.yaml`'s `runtime: docker`
+(Render builds the same `Dockerfile` CI validates, replacing the prior Python-buildpack build) and
+`autoDeploy: false` (Render's default git-integration deploys on *every* push regardless of test
+results; disabling it and gating the actual deploy behind CI's `deploy` job — one `curl -X POST`
+to Render's Deploy Hook, `needs: build-and-push` — means a deploy now only happens once the full
+test suite has passed). `build-and-push` (GHCR) stays in the pipeline even though Render builds
+its own image independently rather than pulling it — it's still a real CI check that the
+Dockerfile builds, and a pullable, versioned artifact on its own merits.
+
 CI's `test` job runs against a real `postgres:16-alpine` service container (same credentials as
 the local `docker-compose.yml`) so the Postgres-backed integration tests actually execute instead
 of self-skipping the way they do locally without `DATABASE_URL`. The Dockerfile installs CPU-only
 torch from PyTorch's own index *before* `pip install -e .`, so the already-satisfied
 `torch>=2.5` constraint stops pip from separately resolving PyPI's default CUDA-bundled build
-(multiple extra GB of `nvidia-cublas-cu12` etc., dead weight on Cloud Run's CPU-only runtime) —
-and bakes both FinBERT models in at build time so a Cloud Run cold start never downloads ~400MB
-of weights on the request that pays for it.
+(multiple extra GB of `nvidia-cublas-cu12` etc., dead weight on any CPU-only deploy target) — and
+bakes both FinBERT models in at build time so a cold start after Render's free-tier idle spin-down
+never downloads ~400MB of weights on the request that pays for it.
 
 Observability is two layers, matching the existing no-op-when-unset pattern already used for
 `API_KEY` in `app/api/auth.py`: structured JSON logging (`configure_logging()`, finally making

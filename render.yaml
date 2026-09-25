@@ -1,11 +1,13 @@
 services:
   - type: web
     name: tracker-api
-    runtime: python
+    runtime: docker
     plan: free
-    buildCommand: pip install -e .
-    startCommand: python scripts/serve.py
     healthCheckPath: /health
+    # Deploys only via the GitHub Actions deploy job (.github/workflows/ci.yml),
+    # which hits this service's Deploy Hook after the test suite passes - not
+    # on every raw push the way Render's default git-integration behaves.
+    autoDeploy: false
     envVars:
       - key: APP_ENV
         value: production
