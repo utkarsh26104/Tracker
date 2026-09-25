@@ -22,5 +22,12 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     log_level: str = "INFO"
 
+    # Optional LLM tracing (app/observability.py). Leave blank to disable -
+    # the app falls back to structured logging only, same no-op-when-unset
+    # pattern as api_key above.
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+
 
 settings = Settings()

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.git/
+.github/
+data/chroma/
+.env
+.env.example
+tests/
+docs/
+*.md
+docker-compose.yml
+render.yaml
+.pytest_cache/

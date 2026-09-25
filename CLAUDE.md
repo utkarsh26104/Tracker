@@ -281,3 +281,60 @@ user-facing message — including Groq's *actual* reported wait time for rate li
 since "no report was produced (insufficient data or an error)" doesn't tell a reviewer whether to
 retry in 20 seconds or 20 minutes. Surfaced end-to-end via `MasterComparisonState.company_errors`
 → `RunResponse.company_errors` / `RetryResponse.error` → the review page's per-company warning.
+
+**`pip install -e .` was silently broken on any fresh checkout, CI included** (`pyproject.toml`'s
+`[tool.setuptools.packages.find]`): with no `[build-system]`/`[tool.setuptools]` config at all,
+setuptools falls back to implicit flat-layout package discovery, which considers every top-level
+directory containing Python-ish content a candidate package. `data/client_context_template.csv`
+is git-tracked (the rest of `data/` is gitignored, but that one file isn't), so `ui/`, `app/`, and
+`data/` all looked like ambiguous top-level packages on a truly fresh checkout — setuptools
+refuses to build rather than guess. This had nothing to do with local `.venv` staleness; it would
+have failed identically the first time CI ran `pip install -e ".[dev]"` on a clean runner. Fixed
+by scoping discovery explicitly to `include = ["app*"]` — the only directory actually meant to be
+importable as a package (`ui/streamlit_app.py` and `scripts/*.py` are run directly, never
+imported via package namespace).
+
+**CI/CD, Docker, and observability** (`.github/workflows/ci.yml`, `Dockerfile`,
+`app/observability.py`): additive to the existing Render+Streamlit-Community-Cloud deploy path,
+not a replacement — see README's "API → GCP Cloud Run (Docker)" section for the full one-time GCP
+setup a user needs to do themselves (Workload Identity Federation, no long-lived JSON key)
+before the `deploy` job in CI can actually succeed; it was built and documented but never run
+against a real GCP project, since that requires credentials this environment doesn't have.
+CI's `test` job runs against a real `postgres:16-alpine` service container (same credentials as
+the local `docker-compose.yml`) so the Postgres-backed integration tests actually execute instead
+of self-skipping the way they do locally without `DATABASE_URL`. The Dockerfile installs CPU-only
+torch from PyTorch's own index *before* `pip install -e .`, so the already-satisfied
+`torch>=2.5` constraint stops pip from separately resolving PyPI's default CUDA-bundled build
+(multiple extra GB of `nvidia-cublas-cu12` etc., dead weight on Cloud Run's CPU-only runtime) —
+and bakes both FinBERT models in at build time so a Cloud Run cold start never downloads ~400MB
+of weights on the request that pays for it.
+
+Observability is two layers, matching the existing no-op-when-unset pattern already used for
+`API_KEY` in `app/api/auth.py`: structured JSON logging (`configure_logging()`, finally making
+`LOG_LEVEL` do something — it was a dead `Settings` field before this) is always on with zero new
+accounts, and a Langfuse callback handler is added only when `LANGFUSE_PUBLIC_KEY`/
+`LANGFUSE_SECRET_KEY` are both set. Getting token/latency data out of *every* LLM call — not just
+the three direct `get_writer_llm().ainvoke(...)` sites in `master_graph.py` — specifically
+requires a LangChain **callback handler**, not reading `response.usage_metadata` after the fact:
+`supervisor.py`/`writer.py` both call `.with_structured_output(..., method="json_schema",
+strict=True)` without `include_raw=True`, so the value returned to the caller is just the parsed
+Pydantic object — the underlying `AIMessage` (and its usage metadata) is discarded before the
+caller ever sees it. A callback's `on_llm_start`/`on_llm_end` fire on the underlying chat-model
+step *before* that parsing happens, so `get_llm_callbacks()` reaches those two call sites' real
+usage data without touching either file. Passing `callbacks` once, in the `config` dict at each
+top-level `graph.ainvoke()` call (via the `_base_config()` helper), is sufficient to reach every
+node's internal LLM call too — LangGraph propagates callbacks to every node through a contextvar
+(verified against `langgraph._internal._runnable.RunnableCallable.ainvoke` and
+`langchain_core.runnables.config.ensure_config` directly, not assumed). The three call sites that
+run *outside* any `graph.ainvoke()` — `_draft_report_from_upload`, `_build_comparison_matrix`,
+`_build_client_strategy` — get no such ambient propagation and need `config={"callbacks":
+get_llm_callbacks()}` passed explicitly at their own call site instead.
+
+Langfuse's Python SDK has churned its LangChain integration's import path across major versions
+recently (v2 → v3 → v4 within about a year) — verify `from langfuse.langchain import
+CallbackHandler` (the current, v3+ path) still matches whatever version is actually installed
+before trusting it. Separately, and non-obviously: `langfuse.langchain.CallbackHandler` hard-
+requires the full `langchain` metapackage (it branches on `langchain.__version__` internally),
+not just `langchain-core`+`langchain-groq`, which is all this project otherwise depends on — this
+only surfaces as a `ModuleNotFoundError` at the callback-handler import site, not at `pip
+install` time, so `langchain` had to be added as an explicit dependency alongside `langfuse`.

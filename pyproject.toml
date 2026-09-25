@@ -28,6 +28,8 @@ dependencies = [
     "xhtml2pdf>=0.2.16",
     "markdown>=3.7",
     "pypdf>=5.1",  # extracts text from uploaded client-dossier PDFs
+    "langfuse>=3.0,<5",  # optional LLM tracing - no-op until LANGFUSE_* env vars are set
+    "langchain>=0.3",  # langfuse.langchain.CallbackHandler hard-requires the full package, not just langchain-core
 ]
 
 [project.optional-dependencies]
@@ -35,6 +37,16 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
 ]
+
+[tool.setuptools.packages.find]
+# Only app/ is an installable package - ui/streamlit_app.py and scripts/*.py
+# are run directly (not imported via package namespace), and data/ is
+# runtime storage (data/client_context_template.csv is the one file tracked
+# in git). Without this, setuptools' implicit flat-layout discovery finds
+# ui/, app/, and data/ as ambiguous top-level package candidates and refuses
+# to build at all - this bites `pip install -e .` on any fresh checkout,
+# CI included, not just local dev.
+include = ["app*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

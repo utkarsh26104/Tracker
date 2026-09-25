@@ -9,6 +9,7 @@ from app.config import settings
 from app.db.checkpointer import pool_context
 from app.db.history import init_history_table
 from app.memory.seed_data import seed_if_empty
+from app.observability import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging()
     if settings.app_env != "dev" and not settings.api_key:
         logger.warning(
             "APP_ENV=%s but API_KEY is unset - /tracker/* endpoints are unauthenticated "

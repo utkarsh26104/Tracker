@@ -1,0 +1,103 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+env:
+  # Hardcoded lowercase, not `ghcr.io/${{ github.repository }}` - Docker
+  # registry names must be lowercase and this repo's name (Tracker) isn't;
+  # GitHub Actions' expression language has no built-in lowercase function.
+  IMAGE_NAME: ghcr.io/utkarsh26104/tracker
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tracker
+          POSTGRES_PASSWORD: tracker
+          POSTGRES_DB: tracker
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tracker"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # Real Postgres so the checkpoint/HITL/Map-Reduce integration tests
+      # actually run instead of self-skipping (see tests/conftest.py's
+      # pg_pool fixture). No Groq/Tavily secrets needed - the full suite's
+      # LLM/Tavily calls are mocked.
+      DATABASE_URL: postgresql://tracker:tracker@localhost:5432/tracker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/ -v
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Build on every push/PR to validate the Dockerfile still builds,
+          # but only publish on pushes to master - a PR from an untrusted
+          # fork shouldn't be able to publish an image under this repo's name.
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for GCP Workload Identity Federation (OIDC)
+    steps:
+      # One-time setup required in your own GCP project before this job can
+      # succeed - see README.md's "API -> GCP Cloud Run (Docker)" section:
+      # a Workload Identity Pool + OIDC provider trusting this repo, and a
+      # deploy service account with Cloud Run Admin + Service Account User,
+      # referenced below via GCP_WORKLOAD_IDENTITY_PROVIDER/
+      # GCP_DEPLOY_SERVICE_ACCOUNT/GCP_REGION repo variables. This step
+      # cannot succeed until that setup exists - it was not run/verified as
+      # part of building this pipeline.
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: tracker-api
+          region: ${{ vars.GCP_REGION }}
+          image: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          flags: >-
+            --timeout=3600
+            --memory=2Gi
+            --cpu=2
+            --min-instances=0
+            --allow-unauthenticated
+            --set-env-vars=APP_ENV=production

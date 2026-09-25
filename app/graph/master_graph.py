@@ -20,6 +20,7 @@ from app.graph.state import (
 from app.llm.groq_client import get_writer_llm
 from app.memory.client_context import query_client_context
 from app.memory.client_uploads import get_client_upload
+from app.observability import get_llm_callbacks
 from app.services.scraping import fetch_company_site_findings, search_marketplace_reviews, search_social_media_presence
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,12 @@ def _thread_id(job_id: str, company: str) -> str:
     return f"{job_id}:{company}"
 
 
+def _base_config(thread_id: str) -> dict:
+    # callbacks here reach every LLM call inside the graph's nodes too, not
+    # just this top-level invocation - see get_llm_callbacks's docstring.
+    return {"configurable": {"thread_id": thread_id}, "callbacks": get_llm_callbacks()}
+
+
 async def _ainvoke_with_retry(graph, initial_input, config: dict, max_attempts: int = 4):
     current_input = initial_input
     for attempt in range(1, max_attempts + 1):
@@ -175,7 +182,7 @@ async def run_company(
     graph = build_graph(checkpointer=checkpointer)
 
     thread_id = _thread_id(job_id, company)
-    config = {"configurable": {"thread_id": thread_id}}
+    config = _base_config(thread_id)
     initial_state = new_agent_state(company=company, job_id=thread_id, search_days=search_days)
 
     if seed_url:
@@ -229,7 +236,7 @@ async def run_company_with_cached_report(
     graph = build_graph(checkpointer=checkpointer)
 
     thread_id = _thread_id(job_id, company)
-    config = {"configurable": {"thread_id": thread_id}}
+    config = _base_config(thread_id)
     initial_state = new_agent_state(company=company, job_id=thread_id, max_loops=0)
     initial_state["final_report"] = cached_report
     initial_state["route_history"] = [
@@ -258,7 +265,8 @@ async def _draft_report_from_upload(company: str, upload: ClientUploadContext) -
                 ),
             ),
             ("human", f"# Uploaded Client Dossier ({upload.source_filename})\n\n{upload.text}"),
-        ]
+        ],
+        config={"callbacks": get_llm_callbacks()},
     )
     return response.content
 
@@ -279,7 +287,7 @@ async def retry_company(pool, job_id: str, company: str) -> dict:
     graph = build_graph(checkpointer=checkpointer)
 
     thread_id = _thread_id(job_id, company)
-    config = {"configurable": {"thread_id": thread_id}}
+    config = _base_config(thread_id)
 
     snapshot = await graph.aget_state(config)
     if not snapshot.values:
@@ -389,7 +397,7 @@ async def resume_one(pool, company: str, job_id: str) -> tuple[str, dict]:
     graph = build_graph(checkpointer=checkpointer)
 
     thread_id = _thread_id(job_id, company)
-    config = {"configurable": {"thread_id": thread_id}}
+    config = _base_config(thread_id)
     result = await _ainvoke_with_retry(graph, None, config)
     return company, result
 
@@ -466,7 +474,8 @@ async def _build_comparison_matrix(company_reports: dict[str, str]) -> str:
         [
             ("system", COMPARISON_SYSTEM_PROMPT_TEMPLATE.format(today=today)),
             ("human", combined),
-        ]
+        ],
+        config={"callbacks": get_llm_callbacks()},
     )
     return response.content
 
@@ -499,6 +508,7 @@ async def _build_client_strategy(client_company: str, company_reports: dict[str,
         [
             ("system", STRATEGY_SYSTEM_PROMPT_TEMPLATE.format(client_company=client_company, today=today)),
             ("human", combined),
-        ]
+        ],
+        config={"callbacks": get_llm_callbacks()},
     )
     return response.content
